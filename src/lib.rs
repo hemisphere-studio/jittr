@@ -63,13 +63,15 @@ where
         if let Some(packet) = self.queued.take() {
             if self.heap.len() >= S {
                 self.queued = Some(packet);
+                self.producer = Some(cx.waker().clone());
                 return Poll::Pending;
             }
 
-            self.heap.push(JitterPacket(packet));
+            self.heap.push(packet.into());
 
-            self.waker.iter().for_each(|w| w.wake_by_ref());
-            cx.waker().wake_by_ref();
+            if let Some(ref consumer) = self.consumer {
+                consumer.wake_by_ref();
+            }
         }
 
         Poll::Ready(Ok(()))
@@ -96,8 +98,14 @@ where
 {
     type Item = P;
 
-    fn poll_next(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.consumer.replace(cx.waker().clone());
+
         if self.heap.is_empty() {
+            if let Some(ref producer) = self.producer {
+                producer.wake_by_ref();
+            }
+
             return Poll::Pending;
         }
 

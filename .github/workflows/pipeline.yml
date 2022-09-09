@@ -1,0 +1,9 @@
+on:
+  push:
+
+name: Pipeline
+
+jobs:
+  tests:
+    name: Tests
+    uses: Hum-Systems/actions/.github/workflows/tests.yml@main

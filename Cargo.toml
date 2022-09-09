@@ -6,7 +6,4 @@ authors = ["Mara Schulke mara.schulke@hum-systems.com"]
 
 [dependencies]
 futures = "0.3"
-rtp = { version = "0.6", optional = true }
-
-[features]
-default = ["rtp"]
+futures-timer = "0.3"

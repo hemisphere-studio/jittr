@@ -1,18 +1,21 @@
 use futures::sink::Sink;
-use futures::Stream;
+use futures::{FutureExt, Stream};
+use futures_timer::Delay;
 use std::collections::BinaryHeap;
 use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
+
+const SAMPLE_RATE: usize = 48000;
 
 #[derive(Debug)]
 pub struct JitterBuffer<P, const S: usize>
 where
     P: Packet,
 {
-    offset: usize,
-    hz: usize,
+    last: Option<JitterHeader>,
+    delay: Option<Delay>,
 
     queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
@@ -29,10 +32,10 @@ impl<P, const S: usize> JitterBuffer<P, S>
 where
     P: Packet,
 {
-    pub fn new(hz: usize) -> Self {
+    pub fn new() -> Self {
         Self {
-            offset: 0,
-            hz,
+            last: None,
+            delay: None,
 
             queued: None,
             heap: BinaryHeap::with_capacity(S),
@@ -182,8 +185,9 @@ where
 }
 
 pub trait Packet: Unpin {
-    fn seq_num(&self) -> u16;
-    fn span(&self) -> Duration;
+    fn sequence_number(&self) -> usize;
+    fn offset(&self) -> usize;
+    fn samples(&self) -> usize;
 }
 
 #[derive(Debug)]
@@ -217,7 +221,7 @@ where
     P: Packet,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.raw.seq_num().eq(&other.raw.seq_num())
+        self.raw.sequence_number().eq(&other.raw.sequence_number())
     }
 }
 
@@ -228,7 +232,10 @@ where
     P: Packet,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.raw.seq_num().partial_cmp(&other.raw.seq_num())
+        self.raw
+            .sequence_number()
+            .partial_cmp(&other.raw.sequence_number())
+            .map(|ordering| ordering.reverse())
     }
 }
 

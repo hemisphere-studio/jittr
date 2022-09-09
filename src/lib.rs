@@ -333,19 +333,15 @@ mod tests {
     fn playback_according_to_sample_rate() {
         let mut jitter = JitterBuffer::<RTP, 10>::new();
 
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
         block_on(jitter.send(RTP {
-            seq: 0,
+            seq: 1,
             offset: 960,
         }))
         .unwrap();
         block_on(jitter.send(RTP {
-            seq: 1,
-            offset: 960 * 2,
-        }))
-        .unwrap();
-        block_on(jitter.send(RTP {
             seq: 2,
-            offset: 960 * 3,
+            offset: 960 * 2,
         }))
         .unwrap();
 
@@ -354,41 +350,108 @@ mod tests {
 
         let start = SystemTime::now();
 
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(RTP {
-                seq: 0,
-                offset: 960
-            })
-        );
+        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 0);
         assert_eq!(jitter.heap.len(), 2);
         assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 0);
-        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 1);
+        assert_eq!(jitter.last.as_ref().unwrap().offset, 0);
 
         assert_eq!(
             block_on(jitter.next()),
             Some(RTP {
                 seq: 1,
-                offset: 960 * 2
+                offset: 960
             })
         );
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 20);
         assert_eq!(jitter.heap.len(), 1);
         assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 1);
-        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 2);
+        assert_eq!(jitter.last.as_ref().unwrap().offset, 960);
 
         assert_eq!(
             block_on(jitter.next()),
             Some(RTP {
                 seq: 2,
-                offset: 960 * 3
+                offset: 960 * 2
             })
         );
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 40);
 
         assert_eq!(jitter.heap.len(), 0);
         assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 2);
-        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 3);
+        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 2);
+    }
+
+    #[test]
+    fn reorders_racing_packets() {
+        let mut jitter = JitterBuffer::<RTP, 10>::new();
+
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+
+        block_on(jitter.send(RTP {
+            seq: 2,
+            offset: 960 * 2,
+        }))
+        .unwrap();
+
+        block_on(jitter.send(RTP {
+            seq: 1,
+            offset: 960,
+        }))
+        .unwrap();
+
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 1,
+                offset: 960
+            })
+        );
+
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 2,
+                offset: 960 * 2
+            })
+        );
+    }
+
+    #[test]
+    fn discards_already_played_packets() {
+        let mut jitter = JitterBuffer::<RTP, 10>::new();
+
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+
+        block_on(jitter.send(RTP {
+            seq: 1,
+            offset: 960,
+        }))
+        .unwrap();
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 1,
+                offset: 960
+            })
+        );
+    }
+
+    #[test]
+    fn discards_duplicated_packets() {
+        let mut jitter = JitterBuffer::<RTP, 10>::new();
+
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+
+        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+        assert_eq!(jitter.heap.len(), 0);
     }
 }

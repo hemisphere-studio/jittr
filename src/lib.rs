@@ -129,22 +129,41 @@ where
 
 pub trait Packet: Unpin {
     fn seq_num(&self) -> u16;
-    fn play_back_at(&self) -> SystemTime;
-    fn received_at(&self) -> SystemTime;
     fn span(&self) -> Duration;
 }
 
 #[derive(Debug)]
-pub(crate) struct JitterPacket<P>(pub(crate) P)
+pub(crate) struct JitterPacket<P>
 where
-    P: Packet;
+    P: Packet,
+{
+    pub(crate) raw: P,
+}
+
+impl<P> JitterPacket<P>
+where
+    P: Packet,
+{
+    fn into(self) -> P {
+        self.raw
+    }
+}
+
+impl<P> From<P> for JitterPacket<P>
+where
+    P: Packet,
+{
+    fn from(raw: P) -> Self {
+        Self { raw }
+    }
+}
 
 impl<P> PartialEq for JitterPacket<P>
 where
     P: Packet,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.0.seq_num().eq(&other.0.seq_num())
+        self.raw.seq_num().eq(&other.raw.seq_num())
     }
 }
 
@@ -155,7 +174,7 @@ where
     P: Packet,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.0.seq_num().partial_cmp(&other.0.seq_num())
+        self.raw.seq_num().partial_cmp(&other.raw.seq_num())
     }
 }
 
@@ -164,7 +183,7 @@ where
     P: Packet,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.0.seq_num().cmp(&other.0.seq_num())
+        self.raw.seq_num().cmp(&other.raw.seq_num())
     }
 }
 
@@ -173,16 +192,6 @@ impl Packet for rtp::packet::Packet {
     #[inline]
     fn seq_num(&self) -> u16 {
         self.header.sequence_number
-    }
-
-    #[inline]
-    fn received_at(&self) -> SystemTime {
-        SystemTime::now()
-    }
-
-    #[inline]
-    fn play_back_at(&self) -> SystemTime {
-        SystemTime::now()
     }
 
     #[inline]
@@ -195,56 +204,41 @@ impl Packet for rtp::packet::Packet {
 mod tests {
     use super::*;
     use futures::SinkExt;
+    use std::time::SystemTime;
 
     #[derive(Debug, Clone, PartialEq)]
     struct RTP {
         seq_num: u16,
-        play_back_at: SystemTime,
-        received_at: SystemTime,
     }
 
     impl Packet for RTP {
         #[inline]
         fn span(&self) -> Duration {
-            Duration::from_millis(10)
+            Duration::from_millis(20)
         }
 
         #[inline]
         fn seq_num(&self) -> u16 {
             self.seq_num
         }
-
-        #[inline]
-        fn play_back_at(&self) -> SystemTime {
-            self.play_back_at
-        }
-
-        #[inline]
-        fn received_at(&self) -> SystemTime {
-            self.received_at
-        }
     }
 
     #[test]
     fn const_capacity() {
-        let jitter = JitterBuffer::<RTP, 10>::new();
+        let jitter = JitterBuffer::<RTP, 10>::new(48000);
         assert_eq!(jitter.heap.capacity(), 10);
     }
 
     #[test]
     fn send() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new();
+        let mut jitter = JitterBuffer::<RTP, 10>::new(48000);
 
-        let packet = RTP {
-            seq_num: 0,
-            play_back_at: SystemTime::now(),
-            received_at: SystemTime::now(),
-        };
+        let packet = RTP { seq_num: 0 };
 
         let before = SystemTime::now();
         futures::executor::block_on(jitter.send(packet.clone())).unwrap();
         assert!(before.elapsed().unwrap() < Duration::from_micros(10));
 
-        assert_eq!(jitter.heap.peek(), Some(&JitterPacket(packet)));
+        assert_eq!(jitter.heap.peek(), Some(&packet.into()));
     }
 }

@@ -109,17 +109,71 @@ where
             return Poll::Pending;
         }
 
-        //if let Some(ref last) = self.last_played {
-        //let lasted = last.play_back_at() + last.span();
-        //let next = self.heap.peek();
+        // check if we have enough packets in the jitter to fight network jitter
+        // this amount should be calcualted based on network latency! find an algorithm for
+        // delaying playback!
 
-        //if lasted <= SystemTime::now() && next.play_back_at() <= SystemTime::now() {
-        //self.last_played.replace(next.clone());
-        //self.buffer.splice
-        //}
-        //}
+        let JitterHeader {
+            sequence_number,
+            offset,
+            samples,
+            yielded_at,
+        } = match self.last {
+            Some(ref last) => last,
+            // no need to delay until the last packet is played back since
+            // we are yielding the first packet right now
+            None => {
+                // SAFETY:
+                // we checked that the heap is not empty so at least one
+                // element must be present or the std implementation is flawed.
+                let packet = self.heap.pop().unwrap().into();
+                self.last = Some(JitterHeader::new(&packet, SystemTime::now()));
 
-        Poll::Pending
+                println!("yielding first packet: sn {}", packet.sequence_number());
+
+                return Poll::Ready(Some(packet));
+            }
+        };
+
+        println!(
+            "we have last: sn {} with offset {} and samples {} yielded at {:?}",
+            sequence_number,
+            offset,
+            samples,
+            yielded_at.elapsed().unwrap()
+        );
+
+        // we handed a packet before, lets sleep if it is played back completly
+        match self.delay.as_mut() {
+            Some(ref mut delay) => match delay.poll_unpin(cx) {
+                Poll::Ready(_) => {
+                    self.delay = None;
+
+                    let packet = match self.heap.pop() {
+                        Some(packet) => packet.into(),
+                        None => return Poll::Pending,
+                    };
+
+                    self.last = Some(JitterHeader::new(&packet, SystemTime::now()));
+
+                    println!(
+                        "yieleded after delay resolved: sn {}",
+                        packet.sequence_number()
+                    );
+
+                    Poll::Ready(Some(packet))
+                }
+                Poll::Pending => Poll::Pending,
+            },
+            None => {
+                // calculate packet duration based on sample length
+
+                let mut delay = Delay::new(Duration::from_millis(20));
+                assert!(delay.poll_unpin(cx).is_pending());
+                self.delay = Some(delay);
+                Poll::Pending
+            }
+        }
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {

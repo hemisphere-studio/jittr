@@ -274,41 +274,106 @@ impl JitterHeader {
 mod tests {
     use super::*;
     use futures::SinkExt;
+    use futures::{executor::block_on, StreamExt};
     use std::time::SystemTime;
 
     #[derive(Debug, Clone, PartialEq)]
     struct RTP {
-        seq_num: u16,
+        seq: usize,
+        offset: usize,
     }
 
     impl Packet for RTP {
         #[inline]
-        fn span(&self) -> Duration {
-            Duration::from_millis(20)
+        fn sequence_number(&self) -> usize {
+            self.seq
         }
 
         #[inline]
-        fn seq_num(&self) -> u16 {
-            self.seq_num
+        fn offset(&self) -> usize {
+            self.offset
+        }
+
+        #[inline]
+        fn samples(&self) -> usize {
+            960
         }
     }
 
     #[test]
     fn const_capacity() {
-        let jitter = JitterBuffer::<RTP, 10>::new(48000);
+        let jitter = JitterBuffer::<RTP, 10>::new();
         assert_eq!(jitter.heap.capacity(), 10);
     }
 
     #[test]
     fn send() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(48000);
-
-        let packet = RTP { seq_num: 0 };
-
-        let before = SystemTime::now();
-        futures::executor::block_on(jitter.send(packet.clone())).unwrap();
-        assert!(before.elapsed().unwrap() < Duration::from_micros(10));
-
+        let mut jitter = JitterBuffer::<RTP, 10>::new();
+        let packet = RTP { seq: 0, offset: 0 };
+        block_on(jitter.send(packet.clone())).unwrap();
         assert_eq!(jitter.heap.peek(), Some(&packet.into()));
+    }
+
+    #[test]
+    fn playback_according_to_sample_rate() {
+        let mut jitter = JitterBuffer::<RTP, 10>::new();
+
+        block_on(jitter.send(RTP {
+            seq: 0,
+            offset: 960,
+        }))
+        .unwrap();
+        block_on(jitter.send(RTP {
+            seq: 1,
+            offset: 960 * 2,
+        }))
+        .unwrap();
+        block_on(jitter.send(RTP {
+            seq: 2,
+            offset: 960 * 3,
+        }))
+        .unwrap();
+
+        assert_eq!(jitter.heap.len(), 3);
+        assert!(jitter.last.is_none());
+
+        let start = SystemTime::now();
+
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 0,
+                offset: 960
+            })
+        );
+        assert_eq!(start.elapsed().unwrap().subsec_millis(), 0);
+        assert_eq!(jitter.heap.len(), 2);
+        assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 0);
+        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 1);
+
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 1,
+                offset: 960 * 2
+            })
+        );
+        assert_eq!(start.elapsed().unwrap().subsec_millis(), 20);
+        assert_eq!(jitter.heap.len(), 1);
+        assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 1);
+        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 2);
+
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 2,
+                offset: 960 * 3
+            })
+        );
+        assert_eq!(start.elapsed().unwrap().subsec_millis(), 40);
+
+        assert_eq!(jitter.heap.len(), 0);
+        assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 2);
+        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 3);
     }
 }

@@ -244,20 +244,29 @@ where
     P: Packet,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.raw.seq_num().cmp(&other.raw.seq_num())
+        self.raw
+            .sequence_number()
+            .cmp(&other.raw.sequence_number())
+            .reverse()
     }
 }
 
-#[cfg(feature = "rtp")]
-impl Packet for rtp::packet::Packet {
-    #[inline]
-    fn seq_num(&self) -> u16 {
-        self.header.sequence_number
-    }
+#[derive(Debug)]
+struct JitterHeader {
+    yielded_at: SystemTime,
+    sequence_number: usize,
+    offset: usize,
+    samples: usize,
+}
 
-    #[inline]
-    fn span(&self) -> Duration {
-        Duration::from_millis(10)
+impl JitterHeader {
+    pub fn new(packet: &impl Packet, yielded_at: SystemTime) -> Self {
+        JitterHeader {
+            yielded_at,
+            sequence_number: packet.sequence_number(),
+            offset: packet.offset(),
+            samples: packet.samples(),
+        }
     }
 }
 

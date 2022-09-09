@@ -7,8 +7,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
 
-const SAMPLE_RATE: usize = 48000;
-
 #[derive(Debug)]
 pub struct JitterBuffer<P, const S: usize>
 where
@@ -68,6 +66,23 @@ where
                 self.queued = Some(packet);
                 self.producer = Some(cx.waker().clone());
                 return Poll::Pending;
+            }
+
+            if let Some(ref last) = self.last {
+                if last.sequence_number >= packet.sequence_number() {
+                    // discarded packet since we played back a later one already
+                    return Poll::Ready(Ok(()));
+                }
+            }
+
+            if self
+                .heap
+                .iter()
+                .find(|p| p.raw.sequence_number() == packet.sequence_number())
+                .is_some()
+            {
+                // discarded packet since we already have it in the heap
+                return Poll::Ready(Ok(()));
             }
 
             self.heap.push(packet.into());

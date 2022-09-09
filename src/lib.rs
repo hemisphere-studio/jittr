@@ -46,6 +46,15 @@ where
     }
 }
 
+impl<P, const S: usize> Default for JitterBuffer<P, S>
+where
+    P: Packet,
+{
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl<P, const S: usize> Sink<P> for JitterBuffer<P, S>
 where
     P: Packet,
@@ -78,8 +87,7 @@ where
             if self
                 .heap
                 .iter()
-                .find(|p| p.raw.sequence_number() == packet.sequence_number())
-                .is_some()
+                .any(|p| p.raw.sequence_number() == packet.sequence_number())
             {
                 // discarded packet since we already have it in the heap
                 return Poll::Ready(Ok(()));

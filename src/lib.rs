@@ -1,31 +1,46 @@
 use futures::sink::Sink;
 use futures::Stream;
 use std::collections::BinaryHeap;
+use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 
 #[derive(Debug)]
 pub struct JitterBuffer<P, const S: usize>
 where
     P: Packet,
 {
-    last_played: Option<P>,
+    offset: usize,
+    hz: usize,
+
     queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
-    waker: Vec<Waker>,
+
+    producer: Option<Waker>,
+    consumer: Option<Waker>,
+
+    #[doc(hidden)]
+    // Prevents autoimplementation of send and sync
+    raw: PhantomData<*mut ()>,
 }
 
 impl<P, const S: usize> JitterBuffer<P, S>
 where
     P: Packet,
 {
-    pub fn new() -> Self {
+    pub fn new(hz: usize) -> Self {
         Self {
-            last_played: None,
+            offset: 0,
+            hz,
+
             queued: None,
             heap: BinaryHeap::with_capacity(S),
-            waker: vec![],
+
+            producer: None,
+            consumer: None,
+
+            raw: PhantomData::default(),
         }
     }
 }

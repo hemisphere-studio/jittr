@@ -6,7 +6,9 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
 
-type Interpolation<P> = Box<dyn Fn(&P, &P) -> Option<P>>;
+fn interpolation<P: Packet>(left: &P, _: &P) -> Option<P> {
+    Some(left.clone())
+}
 
 pub struct JitterBuffer<P, const S: usize>
 where
@@ -18,7 +20,7 @@ where
     queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
 
-    interpolation: Interpolation<P>,
+    interpolation: fn(&P, &P) -> Option<P>,
 
     producer: Option<Waker>,
     consumer: Option<Waker>,
@@ -36,18 +38,16 @@ where
             queued: None,
             heap: BinaryHeap::with_capacity(S),
 
-            interpolation: Box::new(|l, _| Some(l.clone())),
+            interpolation,
 
             producer: None,
             consumer: None,
         }
     }
 
-    pub fn with_interpolation<I>(&mut self, interpolation: I)
-    where
-        I: Fn(&P, &P) -> Option<P> + 'static,
-    {
-        self.interpolation = Box::new(interpolation);
+    pub fn with_interpolation(mut self, interpolation: fn(&P, &P) -> Option<P>) -> Self {
+        self.interpolation = interpolation;
+        self
     }
 
     /// Returns the calcualted packet loss ratio in this moment
@@ -219,7 +219,7 @@ where
                             None => return Poll::Pending,
                         }
                     } else {
-                        match (*self.interpolation)(&last.raw, &self.heap.peek().unwrap().raw) {
+                        match (self.interpolation)(&last.raw, &self.heap.peek().unwrap().raw) {
                             Some(packet) => packet,
                             None => return Poll::Pending,
                         }

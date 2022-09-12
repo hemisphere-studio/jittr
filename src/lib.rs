@@ -261,18 +261,19 @@ where
     }
 }
 
-pub trait Packet: Unpin {
+pub trait Packet: Unpin + Clone {
     fn sequence_number(&self) -> usize;
     fn offset(&self) -> usize;
     fn samples(&self) -> usize;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct JitterPacket<P>
 where
     P: Packet,
 {
     pub(crate) raw: P,
+    pub(crate) yieleded_at: Option<SystemTime>,
 }
 
 impl<P> JitterPacket<P>
@@ -289,7 +290,10 @@ where
     P: Packet,
 {
     fn from(raw: P) -> Self {
-        Self { raw }
+        Self {
+            raw,
+            yieleded_at: None,
+        }
     }
 }
 
@@ -325,25 +329,6 @@ where
             .sequence_number()
             .cmp(&other.raw.sequence_number())
             .reverse()
-    }
-}
-
-#[derive(Debug)]
-struct JitterHeader {
-    yielded_at: SystemTime,
-    sequence_number: usize,
-    offset: usize,
-    samples: usize,
-}
-
-impl JitterHeader {
-    pub fn new(packet: &impl Packet, yielded_at: SystemTime) -> Self {
-        JitterHeader {
-            yielded_at,
-            sequence_number: packet.sequence_number(),
-            offset: packet.offset(),
-            samples: packet.samples(),
-        }
     }
 }
 
@@ -415,8 +400,8 @@ mod tests {
         assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 0);
         assert_eq!(jitter.heap.len(), 2);
-        assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 0);
-        assert_eq!(jitter.last.as_ref().unwrap().offset, 0);
+        assert_eq!(jitter.last.as_ref().unwrap().raw.sequence_number(), 0);
+        assert_eq!(jitter.last.as_ref().unwrap().raw.offset(), 0);
 
         assert_eq!(
             block_on(jitter.next()),
@@ -427,8 +412,8 @@ mod tests {
         );
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 20);
         assert_eq!(jitter.heap.len(), 1);
-        assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 1);
-        assert_eq!(jitter.last.as_ref().unwrap().offset, 960);
+        assert_eq!(jitter.last.as_ref().unwrap().raw.sequence_number(), 1);
+        assert_eq!(jitter.last.as_ref().unwrap().raw.offset(), 960);
 
         assert_eq!(
             block_on(jitter.next()),
@@ -440,8 +425,8 @@ mod tests {
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 40);
 
         assert_eq!(jitter.heap.len(), 0);
-        assert_eq!(jitter.last.as_ref().unwrap().sequence_number, 2);
-        assert_eq!(jitter.last.as_ref().unwrap().offset, 960 * 2);
+        assert_eq!(jitter.last.as_ref().unwrap().raw.sequence_number(), 2);
+        assert_eq!(jitter.last.as_ref().unwrap().raw.offset(), 960 * 2);
     }
 
     #[test]

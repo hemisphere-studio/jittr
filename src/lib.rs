@@ -7,22 +7,23 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
 
-#[derive(Debug)]
 pub struct JitterBuffer<P, const S: usize>
 where
     P: Packet,
 {
-    last: Option<JitterHeader>,
+    last: Option<JitterPacket<P>>,
     delay: Option<Delay>,
 
     queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
 
+    interpolation: Box<dyn Fn(&P, &P) -> Option<P>>,
+
     producer: Option<Waker>,
     consumer: Option<Waker>,
 
-    #[doc(hidden)]
     // Prevents autoimplementation of send and sync
+    #[doc(hidden)]
     raw: PhantomData<*mut ()>,
 }
 
@@ -38,11 +39,44 @@ where
             queued: None,
             heap: BinaryHeap::with_capacity(S),
 
+            interpolation: Box::new(|l, _| Some(l.clone())),
+
             producer: None,
             consumer: None,
 
             raw: PhantomData::default(),
         }
+    }
+
+    pub fn with_interpolation<I>(&mut self, interpolation: I)
+    where
+        I: Fn(&P, &P) -> Option<P> + 'static,
+    {
+        self.interpolation = Box::new(interpolation);
+    }
+
+    /// Returns the calcualted packet loss ratio in this moment
+    pub fn plr(&self) -> f32 {
+        let buffered = self.heap.len();
+        let packets_lost = self
+            .heap
+            .iter()
+            .fold((0, 0), |(lost, last_seq), packet| {
+                let current = packet.raw.sequence_number();
+
+                if last_seq == 0 {
+                    return (lost, current);
+                }
+
+                if last_seq + 1 != current {
+                    return (lost + 1, current);
+                }
+
+                (lost, current)
+            })
+            .0;
+
+        packets_lost as f32 / buffered as f32
     }
 }
 

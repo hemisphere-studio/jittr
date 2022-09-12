@@ -112,7 +112,7 @@ where
             }
 
             if let Some(ref last) = self.last {
-                if last.sequence_number >= packet.sequence_number() {
+                if last.raw.sequence_number() >= packet.sequence_number() {
                     // discarded packet since we played back a later one already
                     return Poll::Ready(Ok(()));
                 }
@@ -173,34 +173,38 @@ where
         // this amount should be calcualted based on network latency! find an algorithm for
         // delaying playback!
 
-        let JitterHeader {
-            sequence_number,
-            offset,
-            samples,
-            yielded_at,
-        } = match self.last {
-            Some(ref last) => last,
+        if self.heap.len() < (S as f32 * self.plr()) as usize {
+            if let Some(ref producer) = self.producer {
+                producer.wake_by_ref();
+            }
+
+            return Poll::Pending;
+        }
+
+        let last = match self.last {
+            Some(ref last) => last.to_owned(),
             // no need to delay until the last packet is played back since
             // we are yielding the first packet right now
             None => {
                 // SAFETY:
                 // we checked that the heap is not empty so at least one
                 // element must be present or the std implementation is flawed.
-                let packet = self.heap.pop().unwrap().into();
-                self.last = Some(JitterHeader::new(&packet, SystemTime::now()));
+                let mut packet = self.heap.pop().unwrap();
+                packet.yieleded_at = Some(SystemTime::now());
+                self.last = Some(packet.clone());
 
-                println!("yielding first packet: sn {}", packet.sequence_number());
+                println!("yielding first packet: sn {}", packet.raw.sequence_number());
 
-                return Poll::Ready(Some(packet));
+                return Poll::Ready(Some(packet.into()));
             }
         };
 
         println!(
             "we have last: sn {} with offset {} and samples {} yielded at {:?}",
-            sequence_number,
-            offset,
-            samples,
-            yielded_at.elapsed().unwrap()
+            last.raw.sequence_number(),
+            last.raw.offset(),
+            last.raw.samples(),
+            last.yieleded_at.unwrap().elapsed().unwrap()
         );
 
         // we handed a packet before, lets sleep if it is played back completly
@@ -209,12 +213,28 @@ where
                 Poll::Ready(_) => {
                     self.delay = None;
 
-                    let packet = match self.heap.pop() {
-                        Some(packet) => packet.into(),
+                    let next_sequence = match self.heap.peek() {
+                        Some(next) => next.raw.sequence_number(),
                         None => return Poll::Pending,
                     };
 
-                    self.last = Some(JitterHeader::new(&packet, SystemTime::now()));
+                    let packet = if next_sequence == last.raw.sequence_number() + 1 {
+                        match self.heap.pop() {
+                            Some(packet) => packet.into(),
+                            None => return Poll::Pending,
+                        }
+                    } else {
+                        match (*self.interpolation)(&last.raw, &self.heap.peek().unwrap().raw) {
+                            Some(packet) => packet,
+                            None => return Poll::Pending,
+                        }
+                    };
+
+                    self.last = Some({
+                        let mut yielded = JitterPacket::from(packet.clone());
+                        yielded.yieleded_at = Some(SystemTime::now());
+                        yielded
+                    });
 
                     println!(
                         "yieleded after delay resolved: sn {}",

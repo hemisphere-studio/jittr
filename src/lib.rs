@@ -2,7 +2,6 @@ use futures::sink::Sink;
 use futures::{FutureExt, Stream};
 use futures_timer::Delay;
 use std::collections::BinaryHeap;
-use std::marker::PhantomData;
 use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
@@ -23,10 +22,6 @@ where
 
     producer: Option<Waker>,
     consumer: Option<Waker>,
-
-    // Prevents autoimplementation of send and sync
-    #[doc(hidden)]
-    raw: PhantomData<*mut ()>,
 }
 
 impl<P, const S: usize> JitterBuffer<P, S>
@@ -45,8 +40,6 @@ where
 
             producer: None,
             consumer: None,
-
-            raw: PhantomData::default(),
         }
     }
 

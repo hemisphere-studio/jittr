@@ -7,6 +7,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
 
+type Interpolation<P> = Box<dyn Fn(&P, &P) -> Option<P>>;
+
 pub struct JitterBuffer<P, const S: usize>
 where
     P: Packet,
@@ -17,7 +19,7 @@ where
     queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
 
-    interpolation: Box<dyn Fn(&P, &P) -> Option<P>>,
+    interpolation: Interpolation<P>,
 
     producer: Option<Waker>,
     consumer: Option<Waker>,

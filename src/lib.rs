@@ -20,7 +20,10 @@ where
     queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
 
+    // settings
     interpolation: fn(&P, &P) -> Option<P>,
+    sample_rate: usize,
+    channels: usize,
 
     producer: Option<Waker>,
     consumer: Option<Waker>,
@@ -30,7 +33,7 @@ impl<P, const S: usize> JitterBuffer<P, S>
 where
     P: Packet,
 {
-    pub fn new() -> Self {
+    pub fn new(sample_rate: usize, channels: usize) -> Self {
         Self {
             last: None,
             delay: None,
@@ -39,6 +42,8 @@ where
             heap: BinaryHeap::with_capacity(S),
 
             interpolation,
+            sample_rate,
+            channels,
 
             producer: None,
             consumer: None,
@@ -71,16 +76,9 @@ where
             })
             .0;
 
-        packets_lost as f32 / buffered as f32
-    }
-}
+        //println!("plr {}", packets_lost as f32 / buffered as f32);
 
-impl<P, const S: usize> Default for JitterBuffer<P, S>
-where
-    P: Packet,
-{
-    fn default() -> Self {
-        Self::new()
+        packets_lost as f32 / buffered as f32
     }
 }
 
@@ -188,19 +186,19 @@ where
                 packet.yieleded_at = Some(SystemTime::now());
                 self.last = Some(packet.clone());
 
-                println!("yielding first packet: sn {}", packet.raw.sequence_number());
+                //println!("yielding first packet: sn {}", packet.raw.sequence_number());
 
                 return Poll::Ready(Some(packet.into()));
             }
         };
 
-        println!(
-            "we have last: sn {} with offset {} and samples {} yielded at {:?}",
-            last.raw.sequence_number(),
-            last.raw.offset(),
-            last.raw.samples(),
-            last.yieleded_at.unwrap().elapsed().unwrap()
-        );
+        //println!(
+        //"we have last: sn {} with offset {} and samples {} yielded at {:?}",
+        //last.raw.sequence_number(),
+        //last.raw.offset(),
+        //last.raw.samples(),
+        //last.yieleded_at.unwrap().elapsed().unwrap()
+        //);
 
         // we handed a packet before, lets sleep if it is played back completly
         match self.delay.as_mut() {
@@ -231,21 +229,29 @@ where
                         yielded
                     });
 
-                    println!(
-                        "yieleded after delay resolved: sn {}",
-                        packet.sequence_number()
-                    );
+                    //println!(
+                    //"yieleded after delay resolved: sn {}, heap size {}",
+                    //packet.sequence_number(),
+                    //self.heap.len()
+                    //);
 
                     Poll::Ready(Some(packet))
                 }
                 Poll::Pending => Poll::Pending,
             },
             None => {
-                // calculate packet duration based on sample length
+                let samples = last.raw.samples() / self.channels;
+                let fraction = samples as f32 / self.sample_rate as f32;
+                let elapsed = last
+                    .yieleded_at
+                    .unwrap_or(SystemTime::now())
+                    .elapsed()
+                    .unwrap_or(Duration::ZERO);
+                let duration =
+                    Duration::from_millis((fraction * 1000.0f32) as u64).saturating_sub(elapsed);
 
-                let mut delay = Delay::new(Duration::from_millis(20));
-                assert!(delay.poll_unpin(cx).is_pending());
-                self.delay = Some(delay);
+                self.delay = Some(Delay::new(duration));
+
                 Poll::Pending
             }
         }
@@ -334,6 +340,9 @@ mod tests {
     use futures::{executor::block_on, StreamExt};
     use std::time::SystemTime;
 
+    const SAMPLE_RATE: usize = 48000;
+    const CHANNELS: usize = 2;
+
     #[derive(Debug, Clone, PartialEq)]
     struct RTP {
         seq: usize,
@@ -359,13 +368,13 @@ mod tests {
 
     #[test]
     fn const_capacity() {
-        let jitter = JitterBuffer::<RTP, 10>::new();
+        let jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
         assert_eq!(jitter.heap.capacity(), 10);
     }
 
     #[test]
     fn send() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new();
+        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
         let packet = RTP { seq: 0, offset: 0 };
         block_on(jitter.send(packet.clone())).unwrap();
         assert_eq!(jitter.heap.peek(), Some(&packet.into()));
@@ -373,7 +382,7 @@ mod tests {
 
     #[test]
     fn playback_according_to_sample_rate() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new();
+        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
 
         block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
         block_on(jitter.send(RTP {
@@ -426,7 +435,7 @@ mod tests {
 
     #[test]
     fn reorders_racing_packets() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new();
+        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
 
         block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
         assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
@@ -462,7 +471,7 @@ mod tests {
 
     #[test]
     fn discards_already_played_packets() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new();
+        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
 
         block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
         assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
@@ -485,7 +494,7 @@ mod tests {
 
     #[test]
     fn discards_duplicated_packets() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new();
+        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
 
         block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
         block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();

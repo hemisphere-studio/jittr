@@ -244,7 +244,7 @@ where
                 let fraction = samples as f32 / self.sample_rate as f32;
                 let elapsed = last
                     .yieleded_at
-                    .unwrap_or(SystemTime::now())
+                    .unwrap_or_else(SystemTime::now)
                     .elapsed()
                     .unwrap_or(Duration::ZERO);
                 let duration =

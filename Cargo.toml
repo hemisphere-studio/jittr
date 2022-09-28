@@ -7,3 +7,7 @@ authors = ["Mara Schulke mara.schulke@hum-systems.com"]
 [dependencies]
 futures = "0.3"
 futures-timer = "0.3"
+log = { version = "0.4", optional = true }
+
+[features]
+default = ["log"]

@@ -10,6 +10,8 @@ fn interpolation<P: Packet>(left: &P, _: &P) -> Option<P> {
     Some(left.clone())
 }
 
+const JITTER_DELAY: Duration = Duration::from_millis(100);
+
 pub struct JitterBuffer<P, const S: usize>
 where
     P: Packet,
@@ -76,7 +78,11 @@ where
             })
             .0;
 
-        //println!("plr {}", packets_lost as f32 / buffered as f32);
+        #[cfg(feature = "log")]
+        log::debug!(
+            "picture loss ratio: {}",
+            packets_lost as f32 / buffered as f32
+        );
 
         packets_lost as f32 / buffered as f32
     }
@@ -106,7 +112,12 @@ where
 
             if let Some(ref last) = self.last {
                 if last.raw.sequence_number() >= packet.sequence_number() {
-                    // discarded packet since we played back a later one already
+                    #[cfg(feature = "log")]
+                    log::debug!(
+                        "discarded packet {} since newer packet was already played back",
+                        packet.sequence_number()
+                    );
+
                     return Poll::Ready(Ok(()));
                 }
             }
@@ -116,7 +127,12 @@ where
                 .iter()
                 .any(|p| p.raw.sequence_number() == packet.sequence_number())
             {
-                // discarded packet since we already have it in the heap
+                #[cfg(feature = "log")]
+                log::debug!(
+                    "discarded packet {} since its already buffered",
+                    packet.sequence_number()
+                );
+
                 return Poll::Ready(Ok(()));
             }
 
@@ -162,11 +178,14 @@ where
             return Poll::Pending;
         }
 
+        // TODO: Verify
         // check if we have enough packets in the jitter to fight network jitter
         // this amount should be calcualted based on network latency! find an algorithm for
         // delaying playback!
 
-        if self.heap.len() < (S as f32 * self.plr()) as usize {
+        let buffered_samples: usize = self.heap.iter().map(|p| p.raw.samples()).sum();
+
+        if (buffered_samples as f32 / self.sample_rate as f32) < JITTER_DELAY.as_secs_f32() {
             if let Some(ref producer) = self.producer {
                 producer.wake_by_ref();
             }
@@ -186,19 +205,16 @@ where
                 packet.yieleded_at = Some(SystemTime::now());
                 self.last = Some(packet.clone());
 
-                //println!("yielding first packet: sn {}", packet.raw.sequence_number());
+                #[cfg(feature = "log")]
+                log::debug!(
+                    "packet {} yieleded, {} remaining",
+                    packet.raw.sequence_number(),
+                    self.heap.len()
+                );
 
                 return Poll::Ready(Some(packet.into()));
             }
         };
-
-        //println!(
-        //"we have last: sn {} with offset {} and samples {} yielded at {:?}",
-        //last.raw.sequence_number(),
-        //last.raw.offset(),
-        //last.raw.samples(),
-        //last.yieleded_at.unwrap().elapsed().unwrap()
-        //);
 
         // we handed a packet before, lets sleep if it is played back completly
         match self.delay.as_mut() {
@@ -229,11 +245,12 @@ where
                         yielded
                     });
 
-                    //println!(
-                    //"yieleded after delay resolved: sn {}, heap size {}",
-                    //packet.sequence_number(),
-                    //self.heap.len()
-                    //);
+                    #[cfg(feature = "log")]
+                    log::debug!(
+                        "packet {} yieleded, {} remaining",
+                        packet.sequence_number(),
+                        self.heap.len()
+                    );
 
                     Poll::Ready(Some(packet))
                 }

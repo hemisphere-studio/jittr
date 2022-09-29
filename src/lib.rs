@@ -7,10 +7,10 @@ use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
 
 fn interpolation<P: Packet>(left: &P, _: &P) -> Option<P> {
-    Some(left.clone())
+    let mut interpolated = left.clone();
+    interpolated.set_sequence_number(left.sequence_number() + 1);
+    Some(interpolated)
 }
-
-const JITTER_DELAY: Duration = Duration::from_millis(100);
 
 pub struct JitterBuffer<P, const S: usize>
 where
@@ -280,6 +280,7 @@ where
 }
 
 pub trait Packet: Unpin + Clone {
+    fn set_sequence_number(&mut self, sequence_number: usize);
     fn sequence_number(&self) -> usize;
     fn offset(&self) -> usize;
     fn samples(&self) -> usize;
@@ -367,6 +368,11 @@ mod tests {
     }
 
     impl Packet for RTP {
+        #[inline]
+        fn set_sequence_number(&mut self, sequence_number: usize) {
+            self.seq = sequence_number;
+        }
+
         #[inline]
         fn sequence_number(&self) -> usize {
             self.seq

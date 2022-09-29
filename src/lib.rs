@@ -82,7 +82,7 @@ where
 
         #[cfg(feature = "log")]
         log::debug!(
-            "picture loss ratio: {}",
+            "packet loss ratio: {}",
             packets_lost as f32 / buffered as f32
         );
 
@@ -206,12 +206,12 @@ where
                 // we checked that the heap is not empty so at least one
                 // element must be present or the std implementation is flawed.
                 let mut packet = self.heap.pop().unwrap();
-                packet.yieleded_at = Some(SystemTime::now());
+                packet.yielded_at = Some(SystemTime::now());
                 self.last = Some(packet.clone());
 
                 #[cfg(feature = "log")]
                 log::debug!(
-                    "packet {} yieleded, {} remaining",
+                    "packet {} yielded, {} remaining",
                     packet.raw.sequence_number(),
                     self.heap.len()
                 );
@@ -228,30 +228,45 @@ where
 
                     let next_sequence = match self.heap.peek() {
                         Some(next) => next.raw.sequence_number(),
-                        None => return Poll::Pending,
+                        None => {
+                            #[cfg(feature = "log")]
+                            log::error!("expected next packet to be present but heap is empty");
+
+                            return Poll::Pending;
+                        }
                     };
 
                     let packet = if next_sequence == last.raw.sequence_number() + 1 {
                         match self.heap.pop() {
                             Some(packet) => packet.into(),
-                            None => return Poll::Pending,
+                            None => {
+                                #[cfg(feature = "log")]
+                                log::error!("expected packet {next_sequence} to be present");
+
+                                return Poll::Pending;
+                            }
                         }
                     } else {
                         match (self.interpolation)(&last.raw, &self.heap.peek().unwrap().raw) {
                             Some(packet) => packet,
-                            None => return Poll::Pending,
+                            None => {
+                                #[cfg(feature = "log")]
+                                log::error!("expected packet {next_sequence}+1 to be present, interpolation failed");
+
+                                return Poll::Pending;
+                            }
                         }
                     };
 
                     self.last = Some({
                         let mut yielded = JitterPacket::from(packet.clone());
-                        yielded.yieleded_at = Some(SystemTime::now());
+                        yielded.yielded_at = Some(SystemTime::now());
                         yielded
                     });
 
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "packet {} yieleded, {} remaining",
+                        "packet {} yielded after delay, {} remaining",
                         packet.sequence_number(),
                         self.heap.len()
                     );
@@ -264,7 +279,7 @@ where
                 let samples = last.raw.samples() / self.channels;
                 let fraction = samples as f32 / self.sample_rate as f32;
                 let elapsed = last
-                    .yieleded_at
+                    .yielded_at
                     .unwrap_or_else(SystemTime::now)
                     .elapsed()
                     .unwrap_or(Duration::ZERO);
@@ -296,7 +311,7 @@ where
     P: Packet,
 {
     pub(crate) raw: P,
-    pub(crate) yieleded_at: Option<SystemTime>,
+    pub(crate) yielded_at: Option<SystemTime>,
 }
 
 impl<P> JitterPacket<P>
@@ -315,7 +330,7 @@ where
     fn from(raw: P) -> Self {
         Self {
             raw,
-            yieleded_at: None,
+            yielded_at: None,
         }
     }
 }

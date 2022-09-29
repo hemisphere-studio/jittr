@@ -35,6 +35,8 @@ impl<P, const S: usize> JitterBuffer<P, S>
 where
     P: Packet,
 {
+    const MAX_DELAY: Duration = Duration::from_millis(200);
+
     pub fn new(sample_rate: usize, channels: usize) -> Self {
         Self {
             last: None,
@@ -185,7 +187,9 @@ where
 
         let buffered_samples: usize = self.heap.iter().map(|p| p.raw.samples()).sum();
 
-        if (buffered_samples as f32 / self.sample_rate as f32) < JITTER_DELAY.as_secs_f32() {
+        if (buffered_samples as f32 / self.sample_rate as f32)
+            < (Self::MAX_DELAY.as_secs_f32() * self.plr())
+        {
             if let Some(ref producer) = self.producer {
                 producer.wake_by_ref();
             }

@@ -422,8 +422,21 @@ mod tests {
         assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 0);
         assert_eq!(jitter.heap.len(), 2);
-        assert_eq!(jitter.last.as_ref().unwrap().raw.sequence_number(), 0);
-        assert_eq!(jitter.last.as_ref().unwrap().raw.offset(), 0);
+        assert_eq!(
+            jitter
+                .last
+                .as_ref()
+                .unwrap()
+                .raw
+                .as_ref()
+                .unwrap()
+                .sequence_number(),
+            0
+        );
+        assert_eq!(
+            jitter.last.as_ref().unwrap().raw.as_ref().unwrap().offset(),
+            0
+        );
 
         assert_eq!(
             block_on(jitter.next()),
@@ -432,10 +445,23 @@ mod tests {
                 offset: 960
             })
         );
-        assert_eq!(start.elapsed().unwrap().subsec_millis(), 20);
+        assert_eq!(start.elapsed().unwrap().subsec_millis(), 10);
         assert_eq!(jitter.heap.len(), 1);
-        assert_eq!(jitter.last.as_ref().unwrap().raw.sequence_number(), 1);
-        assert_eq!(jitter.last.as_ref().unwrap().raw.offset(), 960);
+        assert_eq!(
+            jitter
+                .last
+                .as_ref()
+                .unwrap()
+                .raw
+                .as_ref()
+                .unwrap()
+                .sequence_number(),
+            1
+        );
+        assert_eq!(
+            jitter.last.as_ref().unwrap().raw.as_ref().unwrap().offset(),
+            960
+        );
 
         assert_eq!(
             block_on(jitter.next()),
@@ -444,11 +470,24 @@ mod tests {
                 offset: 960 * 2
             })
         );
-        assert_eq!(start.elapsed().unwrap().subsec_millis(), 40);
+        assert_eq!(start.elapsed().unwrap().subsec_millis(), 20);
 
         assert_eq!(jitter.heap.len(), 0);
-        assert_eq!(jitter.last.as_ref().unwrap().raw.sequence_number(), 2);
-        assert_eq!(jitter.last.as_ref().unwrap().raw.offset(), 960 * 2);
+        assert_eq!(
+            jitter
+                .last
+                .as_ref()
+                .unwrap()
+                .raw
+                .as_ref()
+                .unwrap()
+                .sequence_number(),
+            2
+        );
+        assert_eq!(
+            jitter.last.as_ref().unwrap().raw.as_ref().unwrap().offset(),
+            960 * 2
+        );
     }
 
     #[test]

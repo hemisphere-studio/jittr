@@ -164,23 +164,6 @@ where
             return Poll::Pending;
         }
 
-        // TODO: Verify
-        // check if we have enough packets in the jitter to fight network jitter
-        // this amount should be calcualted based on network latency! find an algorithm for
-        // delaying playback!
-
-        let buffered_samples: usize = self.heap.iter().map(|p| p.raw.samples()).sum();
-
-        if (buffered_samples as f32 / self.sample_rate as f32)
-            < (Self::MAX_DELAY.as_secs_f32() * self.plr())
-        {
-            if let Some(ref producer) = self.producer {
-                producer.wake_by_ref();
-            }
-
-            return Poll::Pending;
-        }
-
         let last = match self.last {
             Some(ref last) => last.to_owned(),
             // no need to delay until the last packet is played back since
@@ -231,36 +214,65 @@ where
                             }
                         }
                     } else {
-                        match (self.interpolation)(&last.raw, &self.heap.peek().unwrap().raw) {
-                            Some(packet) => packet,
-                            None => {
-                                #[cfg(feature = "log")]
-                                log::error!("expected packet {next_sequence}+1 to be present, interpolation failed");
-
-                                return Poll::Pending;
-                            }
-                        }
+                        None
                     };
 
                     self.last = Some({
-                        let mut yielded = JitterPacket::from(packet.clone());
+                        let mut yielded = JitterPacket {
+                            raw: packet.clone(),
+                            sequence_number: packet
+                                .as_ref()
+                                .map(|p| p.sequence_number())
+                                .unwrap_or(last.sequence_number + 1),
+                            yielded_at: Some(SystemTime::now()),
+                        };
                         yielded.yielded_at = Some(SystemTime::now());
                         yielded
                     });
 
                     #[cfg(feature = "log")]
                     log::debug!(
-                        "packet {} yielded after delay, {} remaining",
-                        packet.sequence_number(),
+                        "packet {:?} yielded after delay, {} remaining",
+                        self.last.as_ref().map(|l| l.sequence_number),
                         self.heap.len()
                     );
 
-                    Poll::Ready(Some(packet))
+                    Poll::Ready(packet)
                 }
                 Poll::Pending => Poll::Pending,
             },
             None => {
-                let samples = last.raw.samples() / self.channels;
+                // TODO: Verify
+                // check if we have enough packets in the jitter to fight network jitter
+                // this amount should be calcualted based on network latency! find an algorithm for
+                // delaying playback!
+
+                let buffered_samples: usize = self
+                    .heap
+                    .iter()
+                    .map(|p| p.raw.as_ref().map(|raw| raw.samples()).unwrap_or(0))
+                    .sum();
+
+                if (buffered_samples as f32 / self.sample_rate as f32)
+                    < (Self::MAX_DELAY.as_secs_f32() * self.plr())
+                {
+                    if let Some(ref producer) = self.producer {
+                        producer.wake_by_ref();
+                    }
+                }
+
+                let estimated_samples_of_packet = match last.raw.as_ref() {
+                    Some(raw) => raw.samples(),
+                    None => match self.heap.peek() {
+                        Some(packet) => match packet.raw.as_ref() {
+                            Some(raw) => raw.samples(),
+                            None => 0,
+                        },
+                        None => 0,
+                    },
+                };
+
+                let samples = estimated_samples_of_packet / self.channels;
                 let fraction = samples as f32 / self.sample_rate as f32;
                 let elapsed = last
                     .yielded_at

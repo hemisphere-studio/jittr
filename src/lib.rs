@@ -52,17 +52,15 @@ where
             .heap
             .iter()
             .fold((0, 0), |(lost, last_seq), packet| {
-                let current = packet.raw.sequence_number();
-
                 if last_seq == 0 {
-                    return (lost, current);
+                    return (lost, packet.sequence_number);
                 }
 
-                if last_seq + 1 != current {
-                    return (lost + 1, current);
+                if last_seq + 1 != packet.sequence_number {
+                    return (lost + 1, packet.sequence_number);
                 }
 
-                (lost, current)
+                (lost, packet.sequence_number)
             })
             .0;
 
@@ -99,7 +97,7 @@ where
             }
 
             if let Some(ref last) = self.last {
-                if last.raw.sequence_number() >= packet.sequence_number() {
+                if last.sequence_number >= packet.sequence_number() {
                     #[cfg(feature = "log")]
                     log::debug!(
                         "discarded packet {} since newer packet was already played back",
@@ -113,7 +111,7 @@ where
             if self
                 .heap
                 .iter()
-                .any(|p| p.raw.sequence_number() == packet.sequence_number())
+                .any(|p| p.sequence_number == packet.sequence_number())
             {
                 #[cfg(feature = "log")]
                 log::debug!(
@@ -198,11 +196,11 @@ where
                 #[cfg(feature = "log")]
                 log::debug!(
                     "packet {} yielded, {} remaining",
-                    packet.raw.sequence_number(),
+                    packet.sequence_number,
                     self.heap.len()
                 );
 
-                return Poll::Ready(Some(packet.into()));
+                return Poll::Ready(packet.into());
             }
         };
 
@@ -213,7 +211,7 @@ where
                     self.delay = None;
 
                     let next_sequence = match self.heap.peek() {
-                        Some(next) => next.raw.sequence_number(),
+                        Some(next) => next.sequence_number,
                         None => {
                             #[cfg(feature = "log")]
                             log::error!("expected next packet to be present but heap is empty");
@@ -222,7 +220,7 @@ where
                         }
                     };
 
-                    let packet = if next_sequence == last.raw.sequence_number() + 1 {
+                    let packet = if next_sequence == last.sequence_number + 1 {
                         match self.heap.pop() {
                             Some(packet) => packet.into(),
                             None => {
@@ -296,15 +294,16 @@ pub(crate) struct JitterPacket<P>
 where
     P: Packet,
 {
-    pub(crate) raw: P,
+    pub(crate) sequence_number: usize,
     pub(crate) yielded_at: Option<SystemTime>,
+    pub(crate) raw: Option<P>,
 }
 
 impl<P> JitterPacket<P>
 where
     P: Packet,
 {
-    fn into(self) -> P {
+    fn into(self) -> Option<P> {
         self.raw
     }
 }
@@ -315,8 +314,9 @@ where
 {
     fn from(raw: P) -> Self {
         Self {
-            raw,
+            sequence_number: raw.sequence_number(),
             yielded_at: None,
+            raw: Some(raw),
         }
     }
 }
@@ -326,7 +326,7 @@ where
     P: Packet,
 {
     fn eq(&self, other: &Self) -> bool {
-        self.raw.sequence_number().eq(&other.raw.sequence_number())
+        self.sequence_number.eq(&other.sequence_number)
     }
 }
 
@@ -337,9 +337,8 @@ where
     P: Packet,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.raw
-            .sequence_number()
-            .partial_cmp(&other.raw.sequence_number())
+        self.sequence_number
+            .partial_cmp(&other.sequence_number)
             .map(|ordering| ordering.reverse())
     }
 }
@@ -349,10 +348,7 @@ where
     P: Packet,
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.raw
-            .sequence_number()
-            .cmp(&other.raw.sequence_number())
-            .reverse()
+        self.sequence_number.cmp(&other.sequence_number).reverse()
     }
 }
 

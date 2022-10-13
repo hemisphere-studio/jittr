@@ -562,4 +562,62 @@ mod tests {
         assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
         assert_eq!(jitter.heap.len(), 0);
     }
+
+    #[test]
+    fn handles_packet_loss_correctly() {
+        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+
+        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(RTP {
+            seq: 1,
+            offset: 960,
+        }))
+        .unwrap();
+        block_on(jitter.send(RTP {
+            seq: 2,
+            offset: 960 * 2,
+        }))
+        .unwrap();
+        block_on(jitter.send(RTP {
+            seq: 3,
+            offset: 960 * 3,
+        }))
+        .unwrap();
+        block_on(jitter.send(RTP {
+            seq: 5,
+            offset: 960 * 5,
+        }))
+        .unwrap();
+
+        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 1,
+                offset: 960
+            })
+        );
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 2,
+                offset: 960 * 2
+            })
+        );
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 3,
+                offset: 960 * 3
+            })
+        );
+        assert_eq!(block_on(jitter.next()), None);
+        assert_eq!(
+            block_on(jitter.next()),
+            Some(RTP {
+                seq: 5,
+                offset: 960 * 5
+            })
+        );
+    }
 }

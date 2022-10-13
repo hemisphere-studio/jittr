@@ -6,12 +6,6 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
 
-fn interpolation<P: Packet>(left: &P, _: &P) -> Option<P> {
-    let mut interpolated = left.clone();
-    interpolated.set_sequence_number(left.sequence_number() + 1);
-    Some(interpolated)
-}
-
 pub struct JitterBuffer<P, const S: usize>
 where
     P: Packet,
@@ -22,8 +16,6 @@ where
     queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
 
-    // settings
-    interpolation: fn(&P, &P) -> Option<P>,
     sample_rate: usize,
     channels: usize,
 
@@ -45,18 +37,12 @@ where
             queued: None,
             heap: BinaryHeap::with_capacity(S),
 
-            interpolation,
             sample_rate,
             channels,
 
             producer: None,
             consumer: None,
         }
-    }
-
-    pub fn with_interpolation(mut self, interpolation: fn(&P, &P) -> Option<P>) -> Self {
-        self.interpolation = interpolation;
-        self
     }
 
     /// Returns the calcualted packet loss ratio in this moment

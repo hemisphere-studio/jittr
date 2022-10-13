@@ -284,6 +284,8 @@ where
 
                 self.delay = Some(Delay::new(duration));
 
+                let _ = self.delay.as_mut().unwrap().poll_unpin(cx);
+
                 Poll::Pending
             }
         }

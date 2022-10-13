@@ -283,7 +283,6 @@ where
 }
 
 pub trait Packet: Unpin + Clone {
-    fn set_sequence_number(&mut self, sequence_number: usize);
     fn sequence_number(&self) -> usize;
     fn offset(&self) -> usize;
     fn samples(&self) -> usize;
@@ -369,11 +368,6 @@ mod tests {
     }
 
     impl Packet for RTP {
-        #[inline]
-        fn set_sequence_number(&mut self, sequence_number: usize) {
-            self.seq = sequence_number;
-        }
-
         #[inline]
         fn sequence_number(&self) -> usize {
             self.seq

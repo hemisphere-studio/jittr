@@ -123,6 +123,24 @@ where
                 return Poll::Ready(Ok(()));
             }
 
+            if !self.heap.is_empty() {
+                // SAFETY: we checked that we have at least one packet in the heap
+                let max_seq = self.heap.iter().max().unwrap().sequence_number;
+
+                if SequenceNumber(max_seq.0.overflowing_add(S as u16).0)
+                    < packet.sequence_number().into()
+                {
+                    #[cfg(feature = "log")]
+                    log::warn!(
+                        "unexpectedly received packet {} which is too far ahead (over {S} packets) of current playback window, clearing jitter buffer",
+                        packet.sequence_number()
+                    );
+
+                    self.last = None;
+                    self.heap.clear();
+                }
+            }
+
             self.heap.push(packet.into());
 
             if let Some(ref consumer) = self.consumer {

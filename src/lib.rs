@@ -61,10 +61,9 @@ where
                     // Distance between last seq + 1 and current
                     // packet goes across the u16 boundaries
                     if SequenceNumber::from(last_seq + 1).did_wrap(packet.sequence_number) {
-                        let lost_at_end = u16::MAX.checked_sub(last_seq + 1).unwrap_or(0);
-                        let lost_at_start = u16::from(packet.sequence_number)
-                            .checked_sub(u16::MIN)
-                            .unwrap_or(0);
+                        let lost_at_end = u16::MAX.saturating_sub(last_seq + 1);
+                        let lost_at_start =
+                            u16::from(packet.sequence_number).saturating_sub(u16::MIN);
 
                         return (
                             lost + lost_at_end + lost_at_start,
@@ -72,9 +71,7 @@ where
                         );
                     }
 
-                    let diff = u16::from(packet.sequence_number)
-                        .checked_sub(last_seq)
-                        .unwrap_or(0);
+                    let diff = u16::from(packet.sequence_number).saturating_sub(last_seq);
 
                     return (lost + diff, packet.sequence_number.into());
                 }

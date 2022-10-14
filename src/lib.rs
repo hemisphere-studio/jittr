@@ -6,7 +6,8 @@ use std::pin::Pin;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, SystemTime};
 
-pub struct JitterBuffer<P, const S: usize>
+/// Zero latency jitter buffer for real time udp/rtp streams
+pub struct JitterBuffer<P, const S: u8>
 where
     P: Packet,
 {
@@ -23,7 +24,7 @@ where
     consumer: Option<Waker>,
 }
 
-impl<P, const S: usize> JitterBuffer<P, S>
+impl<P, const S: u8> JitterBuffer<P, S>
 where
     P: Packet,
 {
@@ -35,7 +36,7 @@ where
             delay: None,
 
             queued: None,
-            heap: BinaryHeap::with_capacity(S),
+            heap: BinaryHeap::with_capacity(S as usize),
 
             sample_rate,
             channels,
@@ -74,7 +75,7 @@ where
     }
 }
 
-impl<P, const S: usize> Sink<P> for JitterBuffer<P, S>
+impl<P, const S: u8> Sink<P> for JitterBuffer<P, S>
 where
     P: Packet,
 {
@@ -90,14 +91,14 @@ where
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         if let Some(packet) = self.queued.take() {
-            if self.heap.len() >= S {
+            if self.heap.len() >= S as usize {
                 self.queued = Some(packet);
                 self.producer = Some(cx.waker().clone());
                 return Poll::Pending;
             }
 
             if let Some(ref last) = self.last {
-                if last.sequence_number >= packet.sequence_number() {
+                if last.sequence_number >= packet.sequence_number().into() {
                     #[cfg(feature = "log")]
                     log::debug!(
                         "discarded packet {} since newer packet was already played back",
@@ -147,7 +148,7 @@ where
     }
 }
 
-impl<P, const S: usize> Stream for JitterBuffer<P, S>
+impl<P, const S: u8> Stream for JitterBuffer<P, S>
 where
     P: Packet,
 {

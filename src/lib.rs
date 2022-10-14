@@ -54,14 +54,32 @@ where
             .iter()
             .fold((0, 0), |(lost, last_seq), packet| {
                 if last_seq == 0 {
-                    return (lost, packet.sequence_number);
+                    return (lost, packet.sequence_number.into());
                 }
 
-                if last_seq + 1 != packet.sequence_number {
-                    return (lost + 1, packet.sequence_number);
+                if last_seq + 1 != packet.sequence_number.into() {
+                    // Distance between last seq + 1 and current
+                    // packet goes across the u16 boundaries
+                    if SequenceNumber::from(last_seq + 1).did_wrap(packet.sequence_number) {
+                        let lost_at_end = u16::MAX.checked_sub(last_seq + 1).unwrap_or(0);
+                        let lost_at_start = u16::from(packet.sequence_number)
+                            .checked_sub(u16::MIN)
+                            .unwrap_or(0);
+
+                        return (
+                            lost + lost_at_end + lost_at_start,
+                            packet.sequence_number.into(),
+                        );
+                    }
+
+                    let diff = u16::from(packet.sequence_number)
+                        .checked_sub(last_seq)
+                        .unwrap_or(0);
+
+                    return (lost + diff, packet.sequence_number.into());
                 }
 
-                (lost, packet.sequence_number)
+                (lost, packet.sequence_number.into())
             })
             .0;
 
@@ -112,7 +130,7 @@ where
             if self
                 .heap
                 .iter()
-                .any(|p| p.sequence_number == packet.sequence_number())
+                .any(|p| p.sequence_number == packet.sequence_number().into())
             {
                 #[cfg(feature = "log")]
                 log::debug!(
@@ -198,7 +216,7 @@ where
                 #[cfg(feature = "log")]
                 log::debug!(
                     "packet {} yielded, {} remaining",
-                    packet.sequence_number,
+                    packet.sequence_number.0,
                     self.heap.len()
                 );
 
@@ -222,12 +240,12 @@ where
                         }
                     };
 
-                    let packet = if next_sequence == last.sequence_number + 1 {
+                    let packet = if next_sequence == (u16::from(last.sequence_number) + 1).into() {
                         match self.heap.pop() {
                             Some(packet) => packet.into(),
                             None => {
                                 #[cfg(feature = "log")]
-                                log::error!("expected packet {next_sequence} to be present");
+                                log::error!("expected packet {} to be present", next_sequence.0);
 
                                 return Poll::Pending;
                             }
@@ -242,7 +260,8 @@ where
                             sequence_number: packet
                                 .as_ref()
                                 .map(|p| p.sequence_number())
-                                .unwrap_or(last.sequence_number + 1),
+                                .unwrap_or(u16::from(last.sequence_number) + 1)
+                                .into(),
                             yielded_at: Some(SystemTime::now()),
                         };
                         yielded.yielded_at = Some(SystemTime::now());
@@ -316,7 +335,7 @@ where
 }
 
 pub trait Packet: Unpin + Clone {
-    fn sequence_number(&self) -> usize;
+    fn sequence_number(&self) -> u16;
     fn offset(&self) -> usize;
     fn samples(&self) -> usize;
 }
@@ -326,9 +345,9 @@ pub(crate) struct JitterPacket<P>
 where
     P: Packet,
 {
-    pub(crate) sequence_number: usize,
-    pub(crate) yielded_at: Option<SystemTime>,
     pub(crate) raw: Option<P>,
+    pub(crate) sequence_number: SequenceNumber,
+    pub(crate) yielded_at: Option<SystemTime>,
 }
 
 impl<P> JitterPacket<P>
@@ -346,7 +365,7 @@ where
 {
     fn from(raw: P) -> Self {
         Self {
-            sequence_number: raw.sequence_number(),
+            sequence_number: raw.sequence_number().into(),
             yielded_at: None,
             raw: Some(raw),
         }
@@ -369,9 +388,7 @@ where
     P: Packet,
 {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        self.sequence_number
-            .partial_cmp(&other.sequence_number)
-            .map(|ordering| ordering.reverse())
+        Some(self.cmp(other))
     }
 }
 
@@ -381,6 +398,56 @@ where
 {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.sequence_number.cmp(&other.sequence_number).reverse()
+    }
+}
+
+/// A wrapping sequence number type according to the RFC 3550
+/// that has a window in which normal u16 comparisons are inverted
+///
+/// See https://www.rfc-editor.org/rfc/rfc3550#appendix-A.1 as reference
+/// for wrapping sequence number handling
+///
+/// The accepted wrapping window is set to 16 numbers
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SequenceNumber(u16);
+
+impl SequenceNumber {
+    const WRAPPING_WINDOW_SIZE: u16 = 16;
+    const WRAPPING_WINDOW_START: u16 = u16::MAX - (Self::WRAPPING_WINDOW_SIZE / 2);
+    const WRAPPING_WINDOW_END: u16 = u16::MIN + (Self::WRAPPING_WINDOW_SIZE / 2);
+
+    pub fn did_wrap(&self, next: Self) -> bool {
+        self.0 >= Self::WRAPPING_WINDOW_START && next.0 <= Self::WRAPPING_WINDOW_END
+    }
+}
+
+impl PartialOrd for SequenceNumber {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for SequenceNumber {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        if self.did_wrap(*other) {
+            return std::cmp::Ordering::Less;
+        } else if other.did_wrap(*self) {
+            return std::cmp::Ordering::Greater;
+        }
+
+        self.0.cmp(&other.0)
+    }
+}
+
+impl From<u16> for SequenceNumber {
+    fn from(num: u16) -> Self {
+        Self(num)
+    }
+}
+
+impl From<SequenceNumber> for u16 {
+    fn from(sn: SequenceNumber) -> Self {
+        sn.0
     }
 }
 
@@ -396,13 +463,13 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq)]
     struct RTP {
-        seq: usize,
+        seq: u16,
         offset: usize,
     }
 
     impl Packet for RTP {
         #[inline]
-        fn sequence_number(&self) -> usize {
+        fn sequence_number(&self) -> u16 {
             self.seq
         }
 
@@ -652,5 +719,74 @@ mod tests {
                 offset: 960 * 5
             })
         );
+    }
+
+    #[test]
+    fn handles_wrapping_sequence_numbers() {
+        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+
+        let rtp = |seq, logical_seq: usize| RTP {
+            seq,
+            offset: 960 * logical_seq,
+        };
+
+        let pop_seq =
+            |jitter: &mut JitterBuffer<RTP, 10>| jitter.heap.pop().unwrap().sequence_number.0;
+
+        block_on(jitter.send(rtp(u16::MAX - 2, 0))).unwrap();
+        block_on(jitter.send(rtp(u16::MAX - 1, 1))).unwrap();
+        block_on(jitter.send(rtp(u16::MAX, 2))).unwrap();
+        block_on(jitter.send(rtp(u16::MIN, 3))).unwrap();
+        block_on(jitter.send(rtp(u16::MIN + 1, 4))).unwrap();
+        block_on(jitter.send(rtp(u16::MIN + 2, 5))).unwrap();
+
+        assert_eq!(jitter.heap.len(), 6);
+        assert_eq!(pop_seq(&mut jitter), u16::MAX - 2);
+        assert_eq!(pop_seq(&mut jitter), u16::MAX - 1);
+        assert_eq!(pop_seq(&mut jitter), u16::MAX);
+        assert_eq!(pop_seq(&mut jitter), u16::MIN);
+        assert_eq!(pop_seq(&mut jitter), u16::MIN + 1);
+        assert_eq!(pop_seq(&mut jitter), u16::MIN + 2);
+        assert_eq!(jitter.heap.len(), 0);
+    }
+
+    mod sequence_numbers {
+        use super::SequenceNumber as S;
+        use std::cmp::Ordering::*;
+
+        #[test]
+        fn preserves_u16_ordering_for_non_wrapping_nums() {
+            // Preserves normal ordering when not encountering wrapping
+            // 1..-1 since otherwise the checks would wrap
+            for i in 1..u16::MAX - 1 {
+                assert_eq!(S(i - 1).cmp(&S(i)), Less);
+                assert_eq!(S(i - 1).cmp(&S(i + 1)), Less);
+                assert_eq!(S(i).cmp(&S(i - 1)), Greater);
+                assert_eq!(S(i).cmp(&S(i)), Equal);
+                assert_eq!(S(i).cmp(&S(i + 1)), Less);
+                assert_eq!(S(i + 1).cmp(&S(i - 1)), Greater);
+                assert_eq!(S(i + 1).cmp(&S(i)), Greater);
+            }
+        }
+
+        #[test]
+        fn inverts_ordering_if_wrapped() {
+            for i in S::WRAPPING_WINDOW_START..u16::MAX {
+                for j in u16::MIN..S::WRAPPING_WINDOW_END {
+                    assert_eq!(S(i).cmp(&S(j)), Less);
+                    assert_eq!(S(j).cmp(&S(i)), Greater);
+                }
+            }
+        }
+
+        #[test]
+        fn respects_window() {
+            for i in S::WRAPPING_WINDOW_START..u16::MAX {
+                for j in S::WRAPPING_WINDOW_END + 1..S::WRAPPING_WINDOW_END + 8 {
+                    assert_eq!(S(i).cmp(&S(j)), Greater);
+                    assert_eq!(S(j).cmp(&S(i)), Less);
+                }
+            }
+        }
     }
 }

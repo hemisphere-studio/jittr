@@ -35,7 +35,10 @@ directly build ontop of the futures crate.
 
 ## Examples
 
-### Opus 
+### Opus
+
+Playback opus packets (48khz / 2 channels) read from an udp/rtp stream through
+the jitter buffer:
 
 ```rust
 use jittr::{JitterBuffer, Packet};
@@ -50,6 +53,7 @@ impl Packet for Opus { .. }
 const CLOCK_RATE: usize = 48000;
 const CHANNELS: usize = 2;
 
+/// Create a jitter buffer for Opus packets which can hold up to 20 packets
 let mut jitter = JitterBuffer::<Opus, 20>::new(CLOCK_RATE, CHANNELS);
 
 loop {

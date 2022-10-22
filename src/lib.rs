@@ -57,11 +57,13 @@ where
                     return (lost, packet.sequence_number.into());
                 }
 
-                if last_seq + 1 != packet.sequence_number.into() {
+                if last_seq.wrapping_add(1) != packet.sequence_number.into() {
                     // Distance between last seq + 1 and current
                     // packet goes across the u16 boundaries
-                    if SequenceNumber::from(last_seq + 1).did_wrap(packet.sequence_number) {
-                        let lost_at_end = u16::MAX.saturating_sub(last_seq + 1);
+                    if SequenceNumber::from(last_seq.wrapping_add(1))
+                        .did_wrap(packet.sequence_number)
+                    {
+                        let lost_at_end = u16::MAX.saturating_sub(last_seq.wrapping_add(1));
                         let lost_at_start =
                             u16::from(packet.sequence_number).saturating_sub(u16::MIN);
 
@@ -237,7 +239,9 @@ where
                         }
                     };
 
-                    let packet = if next_sequence == (u16::from(last.sequence_number) + 1).into() {
+                    let packet = if next_sequence
+                        == (u16::from(last.sequence_number).wrapping_add(1)).into()
+                    {
                         match self.heap.pop() {
                             Some(packet) => packet.into(),
                             None => {
@@ -257,7 +261,7 @@ where
                             sequence_number: packet
                                 .as_ref()
                                 .map(|p| p.sequence_number())
-                                .unwrap_or(u16::from(last.sequence_number) + 1)
+                                .unwrap_or(u16::from(last.sequence_number).wrapping_add(1))
                                 .into(),
                             yielded_at: Some(SystemTime::now()),
                         };

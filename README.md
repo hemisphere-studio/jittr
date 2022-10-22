@@ -38,13 +38,13 @@ directly build ontop of the futures crate.
 ### Opus 
 
 ```rust
-use jittr::JitterBuffer;
+use jittr::{JitterBuffer, Packet};
 
 let mut rtp_stream = /* your rtp stream */;
 
-/// Your jittr::Packet implementation
+/// Your Packet implementation
 struct Opus { .. }
-impl jittr::Packet for Opus { .. }
+impl Packet for Opus { .. }
 
 /// Information about desired playback speed
 const CLOCK_RATE: usize = 48000;
@@ -58,7 +58,7 @@ loop {
             let opus: Opus = rtp.unwrap();
             jittr.send(opus).await;
         },
-        next = jittr.next().fuse() => {
+        next = jitter.next().fuse() => {
             log::info!("playing {}", next.unwrap().sequence_number());
             // output packet to speaker ..
         }

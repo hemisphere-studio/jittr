@@ -17,8 +17,6 @@
 </div>
 <br />
 
-A universally usable jitter buffer implementation for zero latency udp/rtp streams.
-
 This implementation is designed to fight network jitter and create reliable
 media streams through udp packets. Unordered packets and varying network delay
 is one of the biggest problems when trying to constantly streaming e.g. audio

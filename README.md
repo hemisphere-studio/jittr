@@ -15,6 +15,7 @@
       alt="docs.rs docs" />
   </a>
 </div>
+<br />
 
 A universally usable jitter buffer implementation for zero latency udp/rtp streams.
 

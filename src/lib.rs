@@ -64,8 +64,7 @@ where
                         .did_wrap(packet.sequence_number)
                     {
                         let lost_at_end = u16::MAX.saturating_sub(last_seq.wrapping_add(1));
-                        let lost_at_start =
-                            u16::from(packet.sequence_number).saturating_sub(u16::MIN);
+                        let lost_at_start = u16::from(packet.sequence_number);
 
                         return (
                             lost + lost_at_end + lost_at_start,
@@ -255,18 +254,14 @@ where
                         None
                     };
 
-                    self.last = Some({
-                        let mut yielded = JitterPacket {
-                            raw: packet.clone(),
-                            sequence_number: packet
-                                .as_ref()
-                                .map(|p| p.sequence_number())
-                                .unwrap_or(u16::from(last.sequence_number).wrapping_add(1))
-                                .into(),
-                            yielded_at: Some(SystemTime::now()),
-                        };
-                        yielded.yielded_at = Some(SystemTime::now());
-                        yielded
+                    self.last = Some(JitterPacket {
+                        raw: packet.clone(),
+                        sequence_number: packet
+                            .as_ref()
+                            .map(|p| p.sequence_number())
+                            .unwrap_or(u16::from(last.sequence_number).wrapping_add(1))
+                            .into(),
+                        yielded_at: Some(SystemTime::now()),
                     });
 
                     #[cfg(feature = "log")]
@@ -292,7 +287,7 @@ where
                     .map(|p| p.raw.as_ref().map(|raw| raw.samples()).unwrap_or(0))
                     .sum();
 
-                if (buffered_samples as f32 / self.sample_rate as f32)
+                if (buffered_samples as f32 / self.sample_rate as f32 / self.channels as f32)
                     < (Self::MAX_DELAY.as_secs_f32() * self.plr())
                 {
                     if let Some(ref producer) = self.producer {

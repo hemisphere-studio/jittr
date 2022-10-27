@@ -2,7 +2,14 @@
 name = "jittr"
 version = "0.1.0"
 edition = "2021"
+description = "A binary heap based jitter buffer implementation for zero latency udp/rtp streams"
 authors = ["Mara Schulke mara.schulke@hum-systems.com"]
+repository = "https://github.com/Hum-Systems/jittr"
+documentation = "https://docs.rs/jittr"
+keywords = ["jitterbuffer", "audio", "video", "udp", "streaming"]
+categories = ["asynchronous", "data-structures", "multimedia", "network-programming"]
+readme = "README.md"
+license = "MIT"
 
 [dependencies]
 futures = "0.3"

@@ -259,7 +259,7 @@ where
                         sequence_number: packet
                             .as_ref()
                             .map(|p| p.sequence_number())
-                            .unwrap_or(u16::from(last.sequence_number).wrapping_add(1))
+                            .unwrap_or_else(|| u16::from(last.sequence_number).wrapping_add(1))
                             .into(),
                         yielded_at: Some(SystemTime::now()),
                     });
@@ -458,12 +458,12 @@ mod tests {
     const CHANNELS: usize = 2;
 
     #[derive(Debug, Clone, PartialEq)]
-    struct RTP {
+    struct Rtp {
         seq: u16,
         offset: usize,
     }
 
-    impl Packet for RTP {
+    impl Packet for Rtp {
         #[inline]
         fn sequence_number(&self) -> u16 {
             self.seq
@@ -482,29 +482,29 @@ mod tests {
 
     #[test]
     fn const_capacity() {
-        let jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+        let jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
         assert_eq!(jitter.heap.capacity(), 10);
     }
 
     #[test]
     fn send() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
-        let packet = RTP { seq: 0, offset: 0 };
+        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
+        let packet = Rtp { seq: 0, offset: 0 };
         block_on(jitter.send(packet.clone())).unwrap();
         assert_eq!(jitter.heap.peek(), Some(&packet.into()));
     }
 
     #[test]
     fn playback_according_to_sample_rate() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
 
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp {
             seq: 1,
             offset: 960,
         }))
         .unwrap();
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp {
             seq: 2,
             offset: 960 * 2,
         }))
@@ -515,7 +515,7 @@ mod tests {
 
         let start = SystemTime::now();
 
-        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
         assert_eq!(start.elapsed().unwrap().subsec_millis(), 0);
         assert_eq!(jitter.heap.len(), 2);
         assert_eq!(
@@ -536,7 +536,7 @@ mod tests {
 
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 1,
                 offset: 960
             })
@@ -561,7 +561,7 @@ mod tests {
 
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 2,
                 offset: 960 * 2
             })
@@ -588,18 +588,18 @@ mod tests {
 
     #[test]
     fn reorders_racing_packets() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
 
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
 
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp {
             seq: 2,
             offset: 960 * 2,
         }))
         .unwrap();
 
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp {
             seq: 1,
             offset: 960,
         }))
@@ -607,7 +607,7 @@ mod tests {
 
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 1,
                 offset: 960
             })
@@ -615,7 +615,7 @@ mod tests {
 
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 2,
                 offset: 960 * 2
             })
@@ -624,21 +624,21 @@ mod tests {
 
     #[test]
     fn discards_already_played_packets() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
 
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
 
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
 
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp {
             seq: 1,
             offset: 960,
         }))
         .unwrap();
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 1,
                 offset: 960
             })
@@ -647,62 +647,62 @@ mod tests {
 
     #[test]
     fn discards_duplicated_packets() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
 
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
 
-        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
         assert_eq!(jitter.heap.len(), 0);
     }
 
     #[test]
     fn handles_packet_loss_correctly() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
 
-        block_on(jitter.send(RTP { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        block_on(jitter.send(Rtp {
             seq: 1,
             offset: 960,
         }))
         .unwrap();
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp {
             seq: 2,
             offset: 960 * 2,
         }))
         .unwrap();
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp {
             seq: 3,
             offset: 960 * 3,
         }))
         .unwrap();
-        block_on(jitter.send(RTP {
+        block_on(jitter.send(Rtp {
             seq: 5,
             offset: 960 * 5,
         }))
         .unwrap();
 
-        assert_eq!(block_on(jitter.next()), Some(RTP { seq: 0, offset: 0 }));
+        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 1,
                 offset: 960
             })
         );
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 2,
                 offset: 960 * 2
             })
         );
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 3,
                 offset: 960 * 3
             })
@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(block_on(jitter.next()), None);
         assert_eq!(
             block_on(jitter.next()),
-            Some(RTP {
+            Some(Rtp {
                 seq: 5,
                 offset: 960 * 5
             })
@@ -719,15 +719,15 @@ mod tests {
 
     #[test]
     fn handles_wrapping_sequence_numbers() {
-        let mut jitter = JitterBuffer::<RTP, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
 
-        let rtp = |seq, logical_seq: usize| RTP {
+        let rtp = |seq, logical_seq: usize| Rtp {
             seq,
             offset: 960 * logical_seq,
         };
 
         let pop_seq =
-            |jitter: &mut JitterBuffer<RTP, 10>| jitter.heap.pop().unwrap().sequence_number.0;
+            |jitter: &mut JitterBuffer<Rtp, 10>| jitter.heap.pop().unwrap().sequence_number.0;
 
         block_on(jitter.send(rtp(u16::MAX - 2, 0))).unwrap();
         block_on(jitter.send(rtp(u16::MAX - 1, 1))).unwrap();

@@ -89,6 +89,14 @@ where
 
         packets_lost as f32 / buffered as f32
     }
+
+    /// Clear all packets in the jitter buffer
+    pub fn clear(&mut self) {
+        self.last = None;
+        self.delay = None;
+        self.queued = None;
+        self.heap.clear();
+    }
 }
 
 impl<P, const S: u8> Sink<P> for JitterBuffer<P, S>

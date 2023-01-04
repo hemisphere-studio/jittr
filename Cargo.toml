@@ -1,6 +1,6 @@
 [package]
 name = "jittr"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "A binary heap based jitter buffer implementation for zero latency udp/rtp streams"
 authors = ["Mara Schulke mara.schulke@hum-systems.com"]

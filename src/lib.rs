@@ -1,10 +1,5 @@
-use futures::sink::Sink;
-use futures::{FutureExt, Stream};
-use futures_timer::Delay;
 use std::collections::BinaryHeap;
-use std::pin::Pin;
-use std::task::{Context, Poll, Waker};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 /// Zero latency jitter buffer for real time udp/rtp streams
 pub struct JitterBuffer<P, const S: u8>
@@ -12,205 +7,96 @@ where
     P: Packet,
 {
     last: Option<JitterPacket<P>>,
-    delay: Option<Delay>,
-
-    queued: Option<P>,
     heap: BinaryHeap<JitterPacket<P>>,
-
-    sample_rate: usize,
-    channels: usize,
-
-    producer: Option<Waker>,
-    consumer: Option<Waker>,
 }
 
 impl<P, const S: u8> JitterBuffer<P, S>
 where
     P: Packet,
 {
-    const MAX_DELAY: Duration = Duration::from_millis(200);
-
-    pub fn new(sample_rate: usize, channels: usize) -> Self {
+    /// Create a new jitter buffer
+    pub fn new() -> Self {
         Self {
             last: None,
-            delay: None,
-
-            queued: None,
             heap: BinaryHeap::with_capacity(S as usize),
-
-            sample_rate,
-            channels,
-
-            producer: None,
-            consumer: None,
         }
     }
 
-    /// Returns the calcualted packet loss ratio in this moment
-    pub fn plr(&self) -> f32 {
-        let buffered = self.heap.len();
-        let packets_lost = self
-            .heap
-            .iter()
-            .fold((0, 0), |(lost, last_seq), packet| {
-                if last_seq == 0 {
-                    return (lost, packet.sequence_number.into());
-                }
-
-                if last_seq.wrapping_add(1) != packet.sequence_number.into() {
-                    // Distance between last seq + 1 and current
-                    // packet goes across the u16 boundaries
-                    if SequenceNumber::from(last_seq.wrapping_add(1))
-                        .did_wrap(packet.sequence_number)
-                    {
-                        let lost_at_end = u16::MAX.saturating_sub(last_seq.wrapping_add(1));
-                        let lost_at_start = u16::from(packet.sequence_number);
-
-                        return (
-                            lost + lost_at_end + lost_at_start,
-                            packet.sequence_number.into(),
-                        );
-                    }
-
-                    let diff = u16::from(packet.sequence_number).saturating_sub(last_seq);
-
-                    return (lost + diff, packet.sequence_number.into());
-                }
-
-                (lost, packet.sequence_number.into())
-            })
-            .0;
-
-        #[cfg(feature = "log")]
-        log::debug!(
-            "packet loss ratio: {}",
-            packets_lost as f32 / buffered as f32
-        );
-
-        packets_lost as f32 / buffered as f32
-    }
-
-    /// Clear all packets in the jitter buffer
-    pub fn clear(&mut self) {
-        self.last = None;
-        self.delay = None;
-        self.queued = None;
-        self.heap.clear();
-    }
-}
-
-impl<P, const S: u8> Sink<P> for JitterBuffer<P, S>
-where
-    P: Packet,
-{
-    type Error = ();
-
-    fn poll_ready(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if self.queued.is_some() {
-            return Poll::Pending;
-        }
-
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        if let Some(packet) = self.queued.take() {
-            if self.heap.len() >= S as usize {
-                self.queued = Some(packet);
-                self.producer = Some(cx.waker().clone());
-                return Poll::Pending;
-            }
-
-            if let Some(ref last) = self.last {
-                if last.sequence_number >= packet.sequence_number().into() {
-                    #[cfg(feature = "log")]
-                    log::debug!(
-                        "discarded packet {} since newer packet was already played back",
-                        packet.sequence_number()
-                    );
-
-                    return Poll::Ready(Ok(()));
-                }
-            }
-
-            if self
-                .heap
-                .iter()
-                .any(|p| p.sequence_number == packet.sequence_number().into())
-            {
+    /// Push a packet onto the jitter buffer
+    ///
+    /// Hint: This may drop the packet if it is already been played
+    /// back or is already present in the buffer
+    pub fn push(&mut self, packet: P) {
+        if self.heap.len() >= S as usize {
+            while self.heap.len() >= S as usize && !self.heap.is_empty() {
+                // SAFETY: We just checked the length is greater or equal to 1
+                let dropped = self.heap.pop();
+                self.last = None;
                 #[cfg(feature = "log")]
-                log::debug!(
-                    "discarded packet {} since its already buffered",
+                log::warn!("dropping packet: {:?}", dropped.map(|p| p.sequence_number));
+            }
+        }
+
+        if let Some(ref last) = self.last {
+            if last.sequence_number >= packet.sequence_number().into() {
+                #[cfg(feature = "log")]
+                log::warn!(
+                    "discarded packet {} since newer packet was already played back",
                     packet.sequence_number()
                 );
 
-                return Poll::Ready(Ok(()));
-            }
-
-            if !self.heap.is_empty() {
-                // SAFETY: we checked that we have at least one packet in the heap
-                let max_seq = self.heap.iter().max().unwrap().sequence_number;
-
-                if SequenceNumber(max_seq.0.overflowing_add(S as u16).0)
-                    < packet.sequence_number().into()
-                {
-                    #[cfg(feature = "log")]
-                    log::warn!(
-                        "unexpectedly received packet {} which is too far ahead (over {S} packets) of current playback window, clearing jitter buffer",
-                        packet.sequence_number()
-                    );
-
-                    self.last = None;
-                    self.heap.clear();
-                }
-            }
-
-            self.heap.push(packet.into());
-
-            if let Some(ref consumer) = self.consumer {
-                consumer.wake_by_ref();
+                return;
             }
         }
 
-        Poll::Ready(Ok(()))
-    }
+        if self
+            .heap
+            .iter()
+            .any(|p| p.sequence_number == packet.sequence_number().into())
+        {
+            #[cfg(feature = "log")]
+            log::warn!(
+                "discarded packet {} since its already buffered",
+                packet.sequence_number()
+            );
 
-    fn start_send(mut self: Pin<&mut Self>, item: P) -> Result<(), Self::Error> {
-        if self.queued.is_some() {
-            return Err(());
+            return;
         }
 
-        self.queued = Some(item);
+        if !self.heap.is_empty() {
+            // SAFETY: we checked that we have at least one packet in the heap
+            let max_seq = self.heap.iter().max().unwrap().sequence_number;
 
-        Ok(())
+            if SequenceNumber(max_seq.0.overflowing_add(S as u16).0)
+                < packet.sequence_number().into()
+            {
+                #[cfg(feature = "log")]
+                log::warn!(
+                    "unexpectedly received packet {} which is too far ahead (over {S} packets) of current playback window, clearing jitter buffer",
+                    packet.sequence_number()
+                );
+
+                self.clear();
+            }
+        }
+
+        #[cfg(feature = "log")]
+        log::debug!("pushed packet {} onto heap", packet.sequence_number());
+        self.heap.push(packet.into());
     }
 
-    fn poll_close(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.poll_flush(cx)
-    }
-}
-
-impl<P, const S: u8> Stream for JitterBuffer<P, S>
-where
-    P: Packet,
-{
-    type Item = P;
-
-    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.consumer.replace(cx.waker().clone());
-
+    /// Pop the next packet from the jitter buffer
+    ///
+    /// Hint: This will return `None` if the next packet expected
+    /// (by sequence number) was lost. Most audio and video codecs used for
+    /// realtime streaming support inference of lost packets.
+    pub fn pop(&mut self) -> Option<P> {
         if self.heap.is_empty() {
-            if let Some(ref producer) = self.producer {
-                producer.wake_by_ref();
-            }
-
-            return Poll::Pending;
+            return None;
         }
 
         let last = match self.last {
             Some(ref last) => last.to_owned(),
-            // no need to delay until the last packet is played back since
-            // we are yielding the first packet right now
             None => {
                 // SAFETY:
                 // we checked that the heap is not empty so at least one
@@ -226,122 +112,118 @@ where
                     self.heap.len()
                 );
 
-                return Poll::Ready(packet.into());
+                return packet.into();
             }
         };
 
-        // we handed a packet before, lets sleep if it is played back completly
-        match self.delay.as_mut() {
-            Some(ref mut delay) => match delay.poll_unpin(cx) {
-                Poll::Ready(_) => {
-                    self.delay = None;
+        let next_sequence = match self.heap.peek() {
+            Some(next) => next.sequence_number,
+            None => {
+                #[cfg(feature = "log")]
+                log::error!("expected next packet to be present but heap is empty");
 
-                    let next_sequence = match self.heap.peek() {
-                        Some(next) => next.sequence_number,
-                        None => {
-                            #[cfg(feature = "log")]
-                            log::error!("expected next packet to be present but heap is empty");
+                return None;
+            }
+        };
 
-                            return Poll::Pending;
-                        }
-                    };
-
-                    let packet = if next_sequence
-                        == (u16::from(last.sequence_number).wrapping_add(1)).into()
-                    {
-                        match self.heap.pop() {
-                            Some(packet) => packet.into(),
-                            None => {
-                                #[cfg(feature = "log")]
-                                log::error!("expected packet {} to be present", next_sequence.0);
-
-                                return Poll::Pending;
-                            }
-                        }
-                    } else {
-                        None
-                    };
-
-                    self.last = Some(JitterPacket {
-                        raw: packet.clone(),
-                        sequence_number: packet
-                            .as_ref()
-                            .map(|p| p.sequence_number())
-                            .unwrap_or_else(|| u16::from(last.sequence_number).wrapping_add(1))
-                            .into(),
-                        yielded_at: Some(SystemTime::now()),
-                    });
-
+        let packet = if next_sequence == (u16::from(last.sequence_number).wrapping_add(1)).into() {
+            match self.heap.pop() {
+                Some(packet) => packet.into(),
+                None => {
                     #[cfg(feature = "log")]
-                    log::debug!(
-                        "packet {:?} yielded after delay, {} remaining",
-                        self.last.as_ref().map(|l| l.sequence_number),
-                        self.heap.len()
+                    log::error!("expected packet {} to be present", next_sequence.0);
+
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+
+        self.last = Some(JitterPacket {
+            raw: packet.clone(),
+            sequence_number: packet
+                .as_ref()
+                .map(|p| p.sequence_number())
+                .unwrap_or_else(|| u16::from(last.sequence_number).wrapping_add(1))
+                .into(),
+            yielded_at: Some(SystemTime::now()),
+        });
+
+        #[cfg(feature = "log")]
+        log::debug!(
+            "packet {:?} yielded, {} remaining",
+            self.last.as_ref().map(|l| l.sequence_number),
+            self.heap.len()
+        );
+
+        packet
+    }
+
+    /// Retrieve the number of packets available for playback without packet loss.
+    ///
+    /// Hint: Use this to reduce latency once the network is in good condition.
+    /// If there are a lot of packets available for playback without packet loss
+    /// it is pointless to keep them in the buffer.
+    pub fn lossless_packets_buffered(&self) -> usize {
+        match self.last {
+            Some(ref last) => {
+                let mut last = last.sequence_number;
+                let mut count = 0;
+
+                let sequence_numbers = self.heap.clone().into_sorted_vec();
+                let sequence_numbers = sequence_numbers.iter().rev().map(|p| p.sequence_number);
+
+                #[cfg(feature = "log")]
+                log::debug!(
+                    "compute lossless packets: {:?}",
+                    sequence_numbers.clone().collect::<Vec<SequenceNumber>>()
+                );
+
+                for packet in sequence_numbers {
+                    #[cfg(feature = "log")]
+                    log::info!(
+                        "is next of: {:?} {:?} = {}",
+                        packet,
+                        last,
+                        packet.is_next_of(last)
                     );
 
-                    Poll::Ready(packet)
-                }
-                Poll::Pending => Poll::Pending,
-            },
-            None => {
-                // TODO: Verify
-                // check if we have enough packets in the jitter to fight network jitter
-                // this amount should be calcualted based on network latency! find an algorithm for
-                // delaying playback!
-
-                let buffered_samples: usize = self
-                    .heap
-                    .iter()
-                    .map(|p| p.raw.as_ref().map(|raw| raw.samples()).unwrap_or(0))
-                    .sum();
-
-                if (buffered_samples as f32 / self.sample_rate as f32 / self.channels as f32)
-                    < (Self::MAX_DELAY.as_secs_f32() * self.plr())
-                {
-                    if let Some(ref producer) = self.producer {
-                        producer.wake_by_ref();
+                    if packet.is_next_of(last) {
+                        #[cfg(feature = "log")]
+                        log::debug!("{:?} is next of {:?}", packet, last);
+                        last = packet;
+                        count += 1;
+                    } else {
+                        break;
                     }
                 }
 
-                let estimated_samples_of_packet = match last.raw.as_ref() {
-                    Some(raw) => raw.samples(),
-                    None => match self.heap.peek() {
-                        Some(packet) => match packet.raw.as_ref() {
-                            Some(raw) => raw.samples(),
-                            None => 0,
-                        },
-                        None => 0,
-                    },
-                };
+                #[cfg(feature = "log")]
+                log::debug!("computed lossless packets: {count}");
 
-                let samples = estimated_samples_of_packet / self.channels;
-                let fraction = samples as f32 / self.sample_rate as f32;
-                let elapsed = last
-                    .yielded_at
-                    .unwrap_or_else(SystemTime::now)
-                    .elapsed()
-                    .unwrap_or(Duration::ZERO);
-                let duration =
-                    Duration::from_millis((fraction * 1000.0f32) as u64).saturating_sub(elapsed);
-
-                self.delay = Some(Delay::new(duration));
-
-                let _ = self.delay.as_mut().unwrap().poll_unpin(cx);
-
-                Poll::Pending
+                count
             }
+            None => 0,
         }
     }
 
-    fn size_hint(&self) -> (usize, Option<usize>) {
-        (self.heap.len(), None)
+    /// Drops all packets in the jitter buffer
+    pub fn clear(&mut self) {
+        self.last = None;
+        self.heap.clear();
     }
 }
 
+impl<P: Packet, const S: u8> Default for JitterBuffer<P, S> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// A packet which should be reordered and managed by the jitter buffer
 pub trait Packet: Unpin + Clone {
     fn sequence_number(&self) -> u16;
-    fn offset(&self) -> usize;
-    fn samples(&self) -> usize;
 }
 
 #[derive(Debug, Clone)]
@@ -423,6 +305,14 @@ impl SequenceNumber {
     pub fn did_wrap(&self, next: Self) -> bool {
         self.0 >= Self::WRAPPING_WINDOW_START && next.0 <= Self::WRAPPING_WINDOW_END
     }
+
+    pub fn is_next_of(&self, last: SequenceNumber) -> bool {
+        if last.did_wrap(*self) {
+            return last.0 == u16::MAX && self.0 == u16::MIN;
+        }
+
+        last.0.wrapping_add(1) == self.0
+    }
 }
 
 impl PartialOrd for SequenceNumber {
@@ -458,17 +348,10 @@ impl From<SequenceNumber> for u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use futures::SinkExt;
-    use futures::{executor::block_on, StreamExt};
-    use std::time::SystemTime;
-
-    const SAMPLE_RATE: usize = 48000;
-    const CHANNELS: usize = 2;
 
     #[derive(Debug, Clone, PartialEq)]
     struct Rtp {
         seq: u16,
-        offset: usize,
     }
 
     impl Packet for Rtp {
@@ -476,281 +359,121 @@ mod tests {
         fn sequence_number(&self) -> u16 {
             self.seq
         }
-
-        #[inline]
-        fn offset(&self) -> usize {
-            self.offset
-        }
-
-        #[inline]
-        fn samples(&self) -> usize {
-            960
-        }
     }
 
     #[test]
     fn const_capacity() {
-        let jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
+        let jitter = JitterBuffer::<Rtp, 10>::new();
         assert_eq!(jitter.heap.capacity(), 10);
     }
 
     #[test]
     fn send() {
-        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
-        let packet = Rtp { seq: 0, offset: 0 };
-        block_on(jitter.send(packet.clone())).unwrap();
+        let mut jitter = JitterBuffer::<Rtp, 10>::new();
+        let packet = Rtp { seq: 0 };
+        jitter.push(packet.clone());
         assert_eq!(jitter.heap.peek(), Some(&packet.into()));
     }
 
     #[test]
-    fn playback_according_to_sample_rate() {
-        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
-
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(Rtp {
-            seq: 1,
-            offset: 960,
-        }))
-        .unwrap();
-        block_on(jitter.send(Rtp {
-            seq: 2,
-            offset: 960 * 2,
-        }))
-        .unwrap();
-
-        assert_eq!(jitter.heap.len(), 3);
-        assert!(jitter.last.is_none());
-
-        let start = SystemTime::now();
-
-        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
-        assert_eq!(start.elapsed().unwrap().subsec_millis(), 0);
-        assert_eq!(jitter.heap.len(), 2);
-        assert_eq!(
-            jitter
-                .last
-                .as_ref()
-                .unwrap()
-                .raw
-                .as_ref()
-                .unwrap()
-                .sequence_number(),
-            0
-        );
-        assert_eq!(
-            jitter.last.as_ref().unwrap().raw.as_ref().unwrap().offset(),
-            0
-        );
-
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 1,
-                offset: 960
-            })
-        );
-        assert_eq!(start.elapsed().unwrap().subsec_millis(), 10);
-        assert_eq!(jitter.heap.len(), 1);
-        assert_eq!(
-            jitter
-                .last
-                .as_ref()
-                .unwrap()
-                .raw
-                .as_ref()
-                .unwrap()
-                .sequence_number(),
-            1
-        );
-        assert_eq!(
-            jitter.last.as_ref().unwrap().raw.as_ref().unwrap().offset(),
-            960
-        );
-
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 2,
-                offset: 960 * 2
-            })
-        );
-        assert_eq!(start.elapsed().unwrap().subsec_millis(), 20);
-
-        assert_eq!(jitter.heap.len(), 0);
-        assert_eq!(
-            jitter
-                .last
-                .as_ref()
-                .unwrap()
-                .raw
-                .as_ref()
-                .unwrap()
-                .sequence_number(),
-            2
-        );
-        assert_eq!(
-            jitter.last.as_ref().unwrap().raw.as_ref().unwrap().offset(),
-            960 * 2
-        );
-    }
-
-    #[test]
     fn reorders_racing_packets() {
-        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new();
 
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
+        jitter.push(Rtp { seq: 0 });
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 0 }));
 
-        block_on(jitter.send(Rtp {
-            seq: 2,
-            offset: 960 * 2,
-        }))
-        .unwrap();
+        jitter.push(Rtp { seq: 2 });
+        jitter.push(Rtp { seq: 1 });
 
-        block_on(jitter.send(Rtp {
-            seq: 1,
-            offset: 960,
-        }))
-        .unwrap();
-
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 1,
-                offset: 960
-            })
-        );
-
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 2,
-                offset: 960 * 2
-            })
-        );
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 1 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 2 }));
     }
 
     #[test]
     fn discards_already_played_packets() {
-        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new();
 
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
+        jitter.push(Rtp { seq: 0 });
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 0 }));
 
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        jitter.push(Rtp { seq: 0 });
+        jitter.push(Rtp { seq: 1 });
 
-        block_on(jitter.send(Rtp {
-            seq: 1,
-            offset: 960,
-        }))
-        .unwrap();
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 1,
-                offset: 960
-            })
-        );
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 1 }));
     }
 
     #[test]
     fn discards_duplicated_packets() {
-        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new();
 
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
+        jitter.push(Rtp { seq: 0 });
+        jitter.push(Rtp { seq: 0 });
+        jitter.push(Rtp { seq: 0 });
+        jitter.push(Rtp { seq: 0 });
+        jitter.push(Rtp { seq: 0 });
 
-        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 0 }));
         assert_eq!(jitter.heap.len(), 0);
+        assert_eq!(jitter.pop(), None);
     }
 
     #[test]
     fn handles_packet_loss_correctly() {
-        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new();
 
-        block_on(jitter.send(Rtp { seq: 0, offset: 0 })).unwrap();
-        block_on(jitter.send(Rtp {
-            seq: 1,
-            offset: 960,
-        }))
-        .unwrap();
-        block_on(jitter.send(Rtp {
-            seq: 2,
-            offset: 960 * 2,
-        }))
-        .unwrap();
-        block_on(jitter.send(Rtp {
-            seq: 3,
-            offset: 960 * 3,
-        }))
-        .unwrap();
-        block_on(jitter.send(Rtp {
-            seq: 5,
-            offset: 960 * 5,
-        }))
-        .unwrap();
+        jitter.push(Rtp { seq: 0 });
+        jitter.push(Rtp { seq: 1 });
+        jitter.push(Rtp { seq: 2 });
+        jitter.push(Rtp { seq: 3 });
+        jitter.push(Rtp { seq: 5 });
 
-        assert_eq!(block_on(jitter.next()), Some(Rtp { seq: 0, offset: 0 }));
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 1,
-                offset: 960
-            })
-        );
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 2,
-                offset: 960 * 2
-            })
-        );
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 3,
-                offset: 960 * 3
-            })
-        );
-        assert_eq!(block_on(jitter.next()), None);
-        assert_eq!(
-            block_on(jitter.next()),
-            Some(Rtp {
-                seq: 5,
-                offset: 960 * 5
-            })
-        );
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 0 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 1 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 2 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 3 }));
+        assert_eq!(jitter.pop(), None);
+        assert_eq!(jitter.pop(), Some(Rtp { seq: 5 }));
     }
 
     #[test]
     fn handles_wrapping_sequence_numbers() {
-        let mut jitter = JitterBuffer::<Rtp, 10>::new(SAMPLE_RATE, CHANNELS);
+        let mut jitter = JitterBuffer::<Rtp, 10>::new();
 
-        let rtp = |seq, logical_seq: usize| Rtp {
-            seq,
-            offset: 960 * logical_seq,
-        };
-
-        let pop_seq =
-            |jitter: &mut JitterBuffer<Rtp, 10>| jitter.heap.pop().unwrap().sequence_number.0;
-
-        block_on(jitter.send(rtp(u16::MAX - 2, 0))).unwrap();
-        block_on(jitter.send(rtp(u16::MAX - 1, 1))).unwrap();
-        block_on(jitter.send(rtp(u16::MAX, 2))).unwrap();
-        block_on(jitter.send(rtp(u16::MIN, 3))).unwrap();
-        block_on(jitter.send(rtp(u16::MIN + 1, 4))).unwrap();
-        block_on(jitter.send(rtp(u16::MIN + 2, 5))).unwrap();
+        jitter.push(Rtp { seq: u16::MAX - 2 });
+        jitter.push(Rtp { seq: u16::MAX - 1 });
+        jitter.push(Rtp { seq: u16::MAX });
+        jitter.push(Rtp { seq: u16::MIN });
+        jitter.push(Rtp { seq: u16::MIN + 1 });
+        jitter.push(Rtp { seq: u16::MIN + 2 });
 
         assert_eq!(jitter.heap.len(), 6);
-        assert_eq!(pop_seq(&mut jitter), u16::MAX - 2);
-        assert_eq!(pop_seq(&mut jitter), u16::MAX - 1);
-        assert_eq!(pop_seq(&mut jitter), u16::MAX);
-        assert_eq!(pop_seq(&mut jitter), u16::MIN);
-        assert_eq!(pop_seq(&mut jitter), u16::MIN + 1);
-        assert_eq!(pop_seq(&mut jitter), u16::MIN + 2);
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MAX - 2 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MAX - 1 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MAX }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MIN }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MIN + 1 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MIN + 2 }));
+        assert_eq!(jitter.heap.len(), 0);
+    }
+
+    #[test]
+    fn handles_reordering_of_wrapping_sequence_numbers() {
+        let mut jitter = JitterBuffer::<Rtp, 10>::new();
+
+        jitter.push(Rtp { seq: u16::MAX - 1 });
+        jitter.push(Rtp { seq: u16::MIN });
+        jitter.push(Rtp { seq: u16::MIN + 2 });
+        jitter.push(Rtp { seq: u16::MAX - 2 });
+        jitter.push(Rtp { seq: u16::MIN + 1 });
+        jitter.push(Rtp { seq: u16::MAX });
+
+        assert_eq!(jitter.heap.len(), 6);
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MAX - 2 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MAX - 1 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MAX }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MIN }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MIN + 1 }));
+        assert_eq!(jitter.pop(), Some(Rtp { seq: u16::MIN + 2 }));
         assert_eq!(jitter.heap.len(), 0);
     }
 

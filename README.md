@@ -23,23 +23,15 @@ is one of the biggest problems when trying to constantly streaming e.g. audio
 through udp (and most likely rtp). This datastructure buffers packets and
 reorders them whilst introducing as little delay as possible.
 
-It needs to know your desired sample playback rate and meta informations about
-each packet to calculate how much playback time is still buffered and what the
-duration of each packet is. Through this information the buffer can ratelimit
-your packet consuming implementation and gets time to reorder delayed packets.
-
-The `JitterBuffer` struct implements `Sink` and `Stream` simultaneously and is
-desinged to work in async implementations. It supports all runtimes since it is
-directly build ontop of the futures crate.
-
 ## Examples
 
 ### Opus
 
-Playback opus packets (48khz / 2 channels) read from an udp/rtp stream through
-the jitter buffer:
+Playback opus packets from an udp/rtp stream through the jitter buffer:
 
 ```rust
+use async_std::stream::interval;
+use std::time::Duration;
 use jittr::{JitterBuffer, Packet};
 
 let mut rtp_stream = /* your rtp stream */;
@@ -48,23 +40,27 @@ let mut rtp_stream = /* your rtp stream */;
 struct Opus { .. }
 impl Packet for Opus { .. }
 
-/// Information about desired playback speed
-const CLOCK_RATE: usize = 48000;
-const CHANNELS: usize = 2;
+/// Create a jitter buffer for Opus packets
+/// It can hold up to 10 packets before it starts to discard old packets
+let mut jitter = JitterBuffer::<Opus, 10>::new();
 
-/// Create a jitter buffer for Opus packets which can hold up to 20 packets
-let mut jitter = JitterBuffer::<Opus, 20>::new(CLOCK_RATE, CHANNELS);
+/// Create an interval for packet playback
+/// A typical length for audio packets is between 10 and 20ms
+let mut playback = interval(Duration::from_millis(20));
 
 loop {
     futures::select! {
+        _ = playback.next().fuse() => {
+            let packet = jittr.pop();
+
+            let pcm = /* Opus decodes audio if present or infers if none */
+
+            // Write pcm to speaker
+        },
         rtp = rtp_stream.next().fuse() => {
             let opus: Opus = rtp.unwrap();
-            jittr.send(opus).await;
+            jittr.push(opus);
         },
-        next = jitter.next().fuse() => {
-            log::info!("playing {}", next.unwrap().sequence_number());
-            // output packet to speaker ..
-        }
     }
 }
 ```
